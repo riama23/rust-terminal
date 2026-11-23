@@ -15,8 +15,9 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, Sel};
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAlert, NSAlertFirstButtonReturn, NSApplication, NSEvent, NSEventModifierFlags, NSMenuItem,
-    NSPasteboard, NSPasteboardTypeString, NSResponder, NSTextInputClient, NSView,
+    NSAlert, NSAlertFirstButtonReturn, NSApplication, NSCursor, NSEvent, NSEventModifierFlags,
+    NSMenuItem, NSPasteboard, NSPasteboardTypeString, NSResponder, NSTextInputClient, NSView,
+    NSWorkspace,
 };
 use objc2_core_foundation::CGSize;
 use objc2_foundation::{
@@ -24,10 +25,12 @@ use objc2_foundation::{
     NSRange, NSRect, NSSize, NSString, NSUInteger,
 };
 use rust_terminal_core::selection;
-use rust_terminal_core::{Selection, SelectionKind};
+use rust_terminal_core::{MouseMode, Selection, SelectionKind, SelectionRange};
 
 use crate::font::{self, Metrics};
-use crate::input::{self, KeyEvent, KeyKind, KittyKey, KittyMods, Mods, kitty};
+use crate::input::{
+    self, KeyEvent, KeyKind, KittyKey, KittyMods, Mods, MouseAction, MouseButton, kitty,
+};
 use crate::renderer::{Layout, TabBar, TabItem};
 use crate::session::Session;
 use crate::window::{PaneSlot, Waker, WindowFrame, WindowShared};
@@ -51,6 +54,8 @@ struct Geometry {
 enum Drag {
     Divider(Divider),
     Select(PaneId),
+    /// La aplicación del panel recibe el ratón (`?1000` y similares).
+    Report(PaneId, MouseButton),
 }
 
 pub struct ViewIvars {
@@ -71,6 +76,15 @@ pub struct ViewIvars {
     scroll_accum: Cell<f64>,
     /// El ratón se movió desde `mouseDown` (si no, un clic simple deselecciona).
     drag_moved: Cell<bool>,
+    /// Enlace bajo el ratón mientras se mantiene Cmd.
+    hover_link: RefCell<Option<(PaneId, SelectionRange)>>,
+    /// Última posición del ratón en píxeles (para Cmd sin mover el ratón).
+    last_mouse: Cell<Option<(f64, f64)>>,
+    /// Última celda reportada a la aplicación (para no repetir movimientos).
+    last_reported: Cell<Option<(PaneId, usize, usize)>>,
+    /// La ventana es la activa y qué panel tenía el foco (avisos `?1004`).
+    window_key: Cell<bool>,
+    last_focus: Cell<Option<PaneId>>,
 }
 
 define_class!(
@@ -115,6 +129,8 @@ define_class!(
         #[unsafe(method(flagsChanged:))]
         fn flags_changed(&self, event: &NSEvent) {
             self.handle_modifier_key(event);
+            let cmd = event.modifierFlags().contains(NSEventModifierFlags::Command);
+            self.update_hover(cmd);
         }
 
         #[unsafe(method(setFrameSize:))]
@@ -286,14 +302,50 @@ define_class!(
         }
 
         #[unsafe(method(mouseUp:))]
-        fn mouse_up(&self, _event: &NSEvent) {
-            if let Some(Drag::Select(id)) = self.ivars().drag.borrow_mut().take()
-                && !self.ivars().drag_moved.get()
-                && let Some(s) = self.session(id)
-            {
-                s.term.lock().unwrap().set_selection(None);
-                self.request_frame();
+        fn mouse_up(&self, event: &NSEvent) {
+            let drag = self.ivars().drag.borrow_mut().take();
+            match drag {
+                Some(Drag::Select(id)) if !self.ivars().drag_moved.get() => {
+                    if let Some(s) = self.session(id) {
+                        s.term.lock().unwrap().set_selection(None);
+                        self.request_frame();
+                    }
+                }
+                Some(Drag::Report(id, button)) => {
+                    self.report_mouse(id, event, button, MouseAction::Release);
+                }
+                _ => {}
             }
+        }
+
+        #[unsafe(method(rightMouseDown:))]
+        fn right_mouse_down(&self, event: &NSEvent) {
+            self.other_button(event, MouseButton::Right, MouseAction::Press);
+        }
+
+        #[unsafe(method(rightMouseUp:))]
+        fn right_mouse_up(&self, event: &NSEvent) {
+            self.other_button(event, MouseButton::Right, MouseAction::Release);
+        }
+
+        #[unsafe(method(otherMouseDown:))]
+        fn other_mouse_down(&self, event: &NSEvent) {
+            self.other_button(event, MouseButton::Middle, MouseAction::Press);
+        }
+
+        #[unsafe(method(otherMouseUp:))]
+        fn other_mouse_up(&self, event: &NSEvent) {
+            self.other_button(event, MouseButton::Middle, MouseAction::Release);
+        }
+
+        #[unsafe(method(rightMouseDragged:))]
+        fn right_mouse_dragged(&self, event: &NSEvent) {
+            self.handle_mouse_dragged(event);
+        }
+
+        #[unsafe(method(mouseMoved:))]
+        fn mouse_moved(&self, event: &NSEvent) {
+            self.handle_mouse_moved(event);
         }
     }
 
@@ -368,6 +420,13 @@ define_class!(
     }
 );
 
+/// Abre una URL con la aplicación predeterminada de macOS.
+fn open_url(url: &str) {
+    if let Some(url) = objc2_foundation::NSURL::URLWithString(&NSString::from_str(url)) {
+        NSWorkspace::sharedWorkspace().openURL(&url);
+    }
+}
+
 fn copy_to_pasteboard(text: &str) {
     // SAFETY: portapapeles general, en el hilo principal.
     unsafe {
@@ -410,6 +469,11 @@ impl TerminalView {
             metrics: Cell::new(None),
             scroll_accum: Cell::new(0.0),
             drag_moved: Cell::new(false),
+            hover_link: RefCell::new(None),
+            last_mouse: Cell::new(None),
+            last_reported: Cell::new(None),
+            window_key: Cell::new(true),
+            last_focus: Cell::new(None),
         });
         // SAFETY: `initWithFrame:` de NSView.
         unsafe { msg_send![super(this), initWithFrame: frame] }
@@ -715,6 +779,12 @@ impl TerminalView {
                 rect: [r.x as f32, r.y as f32, r.w as f32, r.h as f32],
                 pad: g.pad as f32,
                 focused: *id == focused,
+                link: self
+                    .ivars()
+                    .hover_link
+                    .borrow()
+                    .filter(|(p, _)| p == id)
+                    .map(|(_, r)| r),
             });
         }
         for s in sessions.values() {
@@ -722,6 +792,16 @@ impl TerminalView {
             s.visible.store(visible, SeqCst);
         }
         let title = sessions.get(&focused).map(|s| s.title());
+        // Avisos de foco (`?1004`) al cambiar de panel.
+        let previous = self.ivars().last_focus.replace(Some(focused));
+        if previous != Some(focused) && self.ivars().window_key.get() {
+            if let Some(old) = previous.and_then(|p| sessions.get(&p)) {
+                old.send_focus(false);
+            }
+            if let Some(new) = sessions.get(&focused) {
+                new.send_focus(true);
+            }
+        }
         drop(sessions);
 
         *self.ivars().window.frame.lock().unwrap() = Some(WindowFrame {
@@ -822,7 +902,20 @@ impl TerminalView {
         }
         let mut term = s.term.lock().unwrap();
         let modes = term.modes();
-        if modes.alt_screen {
+        let shift = event.modifierFlags().contains(NSEventModifierFlags::Shift);
+        if modes.mouse != MouseMode::Off && !shift {
+            drop(term);
+            let button = if lines > 0 {
+                MouseButton::WheelUp
+            } else {
+                MouseButton::WheelDown
+            };
+            if let Some((id, _)) = self.pane_at(x, y) {
+                for _ in 0..lines.unsigned_abs() {
+                    self.report_mouse(id, event, button, MouseAction::Press);
+                }
+            }
+        } else if modes.alt_screen && modes.alt_scroll {
             // En la pantalla alternativa (less, vim…) la rueda envía flechas.
             drop(term);
             let key = if lines > 0 {
@@ -901,6 +994,21 @@ impl TerminalView {
         }
         let Some(s) = self.session(id) else { return };
         let flags = event.modifierFlags();
+        // Cmd+clic abre el enlace bajo el ratón.
+        if flags.contains(NSEventModifierFlags::Command) {
+            if let Some(url) = self.link_under(id, rect, x, y).map(|(u, _)| u) {
+                open_url(&url);
+            }
+            return;
+        }
+        // Si la aplicación quiere el ratón, se lo damos (Shift lo evita para seleccionar).
+        let mouse_mode = s.term.lock().unwrap().modes().mouse;
+        if mouse_mode != MouseMode::Off && !flags.contains(NSEventModifierFlags::Shift) {
+            self.ivars().last_reported.set(None);
+            self.report_mouse(id, event, MouseButton::Left, MouseAction::Press);
+            *self.ivars().drag.borrow_mut() = Some(Drag::Report(id, MouseButton::Left));
+            return;
+        }
         let (row, col) = self.cell_in(rect, x, y);
         let clicks = event.clickCount();
         {
@@ -978,7 +1086,136 @@ impl TerminalView {
                 self.ivars().drag_moved.set(true);
                 self.request_frame();
             }
+            Some(Drag::Report(id, button)) => {
+                let (id, button) = (*id, *button);
+                drop(drag);
+                let mode = self
+                    .session(id)
+                    .map(|s| s.term.lock().unwrap().modes().mouse);
+                if matches!(mode, Some(MouseMode::Drag | MouseMode::Motion)) {
+                    self.report_mouse(id, event, button, MouseAction::Motion);
+                }
+            }
             None => {}
+        }
+    }
+
+    /// Botón derecho o central: a la aplicación si quiere el ratón.
+    fn other_button(&self, event: &NSEvent, button: MouseButton, action: MouseAction) {
+        let (x, y) = self.mouse_px(event);
+        let Some((id, _)) = self.pane_at(x, y) else {
+            return;
+        };
+        let wants = self
+            .session(id)
+            .is_some_and(|s| s.term.lock().unwrap().modes().mouse != MouseMode::Off);
+        if wants && !event.modifierFlags().contains(NSEventModifierFlags::Shift) {
+            self.ivars().last_reported.set(None);
+            self.report_mouse(id, event, button, action);
+            *self.ivars().drag.borrow_mut() = match action {
+                MouseAction::Press => Some(Drag::Report(id, button)),
+                _ => None,
+            };
+        }
+    }
+
+    /// Envía un evento de ratón a la aplicación del panel `id`.
+    fn report_mouse(&self, id: PaneId, event: &NSEvent, button: MouseButton, action: MouseAction) {
+        let (x, y) = self.mouse_px(event);
+        let rect = self
+            .ivars()
+            .geometry
+            .borrow()
+            .panes
+            .iter()
+            .find(|(p, _)| *p == id)
+            .map(|(_, r)| *r);
+        let (Some(rect), Some(s)) = (rect, self.session(id)) else {
+            return;
+        };
+        let (row, col) = self.cell_in(rect, x, y);
+        let (modes, cols, rows) = {
+            let term = s.term.lock().unwrap();
+            (term.modes(), term.grid().cols(), term.grid().rows())
+        };
+        let (col, row) = (col.min(cols - 1), row.clamp(0, rows as isize - 1) as usize);
+        if action == MouseAction::Motion {
+            // Solo un evento por celda.
+            if self.ivars().last_reported.get() == Some((id, col, row)) {
+                return;
+            }
+        }
+        self.ivars().last_reported.set(Some((id, col, row)));
+        let flags = event.modifierFlags();
+        let mods = Mods {
+            shift: flags.contains(NSEventModifierFlags::Shift),
+            alt: flags.contains(NSEventModifierFlags::Option),
+            ctrl: flags.contains(NSEventModifierFlags::Control),
+        };
+        if let Some(bytes) = input::encode_mouse(button, action, col, row, mods, modes.mouse_sgr) {
+            s.write(&bytes);
+        }
+    }
+
+    fn handle_mouse_moved(&self, event: &NSEvent) {
+        let (x, y) = self.mouse_px(event);
+        self.ivars().last_mouse.set(Some((x, y)));
+        let cmd = event
+            .modifierFlags()
+            .contains(NSEventModifierFlags::Command);
+        self.update_hover(cmd);
+        // `?1003`: cualquier movimiento, sin botón.
+        if let Some((id, _)) = self.pane_at(x, y)
+            && self
+                .session(id)
+                .is_some_and(|s| s.term.lock().unwrap().modes().mouse == MouseMode::Motion)
+        {
+            self.report_mouse(id, event, MouseButton::None, MouseAction::Motion);
+        }
+    }
+
+    /// Enlace (OSC 8 o URL) bajo un punto de un panel.
+    fn link_under(
+        &self,
+        id: PaneId,
+        rect: Rect,
+        x: f64,
+        y: f64,
+    ) -> Option<(String, SelectionRange)> {
+        let s = self.session(id)?;
+        let (row, col) = self.cell_in(rect, x, y);
+        let term = s.term.lock().unwrap();
+        if row < 0 || row as usize >= term.grid().rows() || col >= term.grid().cols() {
+            return None;
+        }
+        let line = term.visible_line(row as usize);
+        term.link_at(selection::point(line, col))
+    }
+
+    /// Con Cmd pulsado, subraya el enlace bajo el ratón y pone la mano.
+    fn update_hover(&self, cmd: bool) {
+        let hover = match (cmd, self.ivars().last_mouse.get()) {
+            (true, Some((x, y))) => self
+                .pane_at(x, y)
+                .and_then(|(id, r)| self.link_under(id, r, x, y).map(|(_, range)| (id, range))),
+            _ => None,
+        };
+        if *self.ivars().hover_link.borrow() != hover {
+            if hover.is_some() {
+                NSCursor::pointingHandCursor().set();
+            } else {
+                NSCursor::arrowCursor().set();
+            }
+            *self.ivars().hover_link.borrow_mut() = hover;
+            self.update_layout();
+        }
+    }
+
+    /// La ventana pasó a ser (o dejó de ser) la activa.
+    pub fn window_focus_changed(&self, key: bool) {
+        self.ivars().window_key.set(key);
+        if let Some(s) = self.focused_session() {
+            s.send_focus(key);
         }
     }
 

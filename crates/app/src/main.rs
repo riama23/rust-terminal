@@ -19,7 +19,7 @@ use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
     NSApplicationTerminateReply, NSBackingStoreType, NSEventModifierFlags, NSMenu, NSMenuItem,
-    NSScreen, NSWindow, NSWindowStyleMask,
+    NSScreen, NSWindow, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_foundation::{
     MainThreadMarker, NSLocale, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect,
@@ -50,12 +50,29 @@ define_class!(
 
     unsafe impl NSObjectProtocol for AppDelegate {}
 
+    unsafe impl NSWindowDelegate for AppDelegate {
+        #[unsafe(method(windowDidBecomeKey:))]
+        fn window_did_become_key(&self, _notification: &NSNotification) {
+            if let Some(view) = self.view() {
+                view.window_focus_changed(true);
+            }
+        }
+
+        #[unsafe(method(windowDidResignKey:))]
+        fn window_did_resign_key(&self, _notification: &NSNotification) {
+            if let Some(view) = self.view() {
+                view.window_focus_changed(false);
+            }
+        }
+    }
+
     unsafe impl NSApplicationDelegate for AppDelegate {
         /// La ventana y la sesión se crean aquí: el display link de la vista
         /// necesita que la ventana ya esté en una pantalla.
         #[unsafe(method(applicationDidFinishLaunching:))]
         fn did_finish_launching(&self, _notification: &NSNotification) {
             let window = open_window(self.mtm());
+            window.setDelegate(Some(ProtocolObject::from_ref(self)));
             let _ = self.ivars().window.set(window);
         }
 
@@ -82,6 +99,16 @@ define_class!(
         }
     }
 );
+
+impl AppDelegate {
+    fn view(&self) -> Option<Retained<TerminalView>> {
+        self.ivars()
+            .window
+            .get()
+            .and_then(|w| w.contentView())
+            .and_then(|v| v.downcast::<TerminalView>().ok())
+    }
+}
 
 impl AppDelegate {
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
@@ -310,6 +337,8 @@ fn open_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
     window.center();
     window.makeKeyAndOrderFront(None);
     window.makeFirstResponder(Some(&view));
+    // Movimiento del ratón sin botón: modo `?1003` y Cmd sobre enlaces.
+    window.setAcceptsMouseMovedEvents(true);
 
     let waker = window::start_render(shared, |target| {
         // SAFETY: `tick:` existe en RenderTarget y recibe el display link.

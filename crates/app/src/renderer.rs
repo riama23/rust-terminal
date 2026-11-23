@@ -195,6 +195,8 @@ pub struct Overlay {
     pub selection: Vec<(usize, usize, usize)>,
     /// Marcas de bloque: fila de la vista del prompt y si el comando falló.
     pub marks: Vec<(usize, bool)>,
+    /// Enlace bajo el ratón (Cmd): columnas `[inicio, fin]` por fila, se subrayan.
+    pub links: Vec<(usize, usize, usize)>,
 }
 
 /// Tamaño del drawable y escala.
@@ -557,6 +559,16 @@ impl Renderer {
             ));
         }
 
+        // Subrayado del enlace bajo el ratón.
+        let stroke = m.stroke as f32;
+        for &(r, a, b) in &overlay.links {
+            let y = oy + r as f32 * ch + (m.baseline as f32 + stroke).min(ch - stroke);
+            glyphs.push(fill(
+                [ox + a as f32 * cw, y, (b + 1 - a) as f32 * cw, stroke],
+                palette::to_rgba(palette::ACCENT, 1.0),
+            ));
+        }
+
         for (r, row) in rows.iter().enumerate() {
             let y = oy + r as f32 * ch;
             let selected = overlay
@@ -841,6 +853,7 @@ mod tests {
         let overlay = Overlay {
             selection: vec![(0, 1, 2)],
             marks: vec![(1, true)],
+            links: vec![(1, 2, 3)],
         };
         let (layout, m, pixels) = render_with(&term, 2.0, &overlay);
         let sel = bgra(palette::SELECTION);
@@ -866,6 +879,10 @@ mod tests {
             })
             .collect();
         assert!(margin.contains(&red), "no hay marca roja en el margen");
+        // El enlace de la fila 1 está subrayado con el color de acento.
+        let accent = bgra(palette::ACCENT);
+        assert!(cell_pixels(layout, m, &pixels, 1, 2).contains(&accent));
+        assert!(!cell_pixels(layout, m, &pixels, 1, 1).contains(&accent));
     }
 
     #[test]
@@ -908,6 +925,7 @@ mod tests {
         let overlay = Overlay {
             selection: vec![(1, 0, 6), (2, 10, 20)],
             marks: vec![(0, false), (8, true)],
+            links: Vec::new(),
         };
         let (layout, _m, pixels) = render_with(&term, 2.0, &overlay);
         let (w, h) = (layout.width_px as usize, layout.height_px as usize);

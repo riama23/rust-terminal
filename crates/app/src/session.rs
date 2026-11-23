@@ -112,6 +112,13 @@ impl Session {
             .is_some_and(|b| b.output.is_some() && !b.is_finished())
     }
 
+    /// Aviso de foco (`?1004`) si la aplicación lo pidió.
+    pub fn send_focus(&self, gained: bool) {
+        if self.term.lock().unwrap().modes().focus_events {
+            self.write(crate::input::encode_focus(gained));
+        }
+    }
+
     /// Cierra la sesión: la shell recibe SIGHUP y el lector termina solo.
     pub fn hangup(&self) {
         rust_terminal_core::hangup(self.pid);

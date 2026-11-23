@@ -18,7 +18,7 @@ use objc2_foundation::{
     NSRunLoop, NSThread,
 };
 use objc2_quartz_core::{CADisplayLink, CAMetalLayer};
-use rust_terminal_core::Term;
+use rust_terminal_core::{SelectionRange, Term};
 
 use crate::renderer::{Frame, Layout, Overlay, PaneFrame, Renderer, TabBar};
 use crate::session::Session;
@@ -30,6 +30,8 @@ pub struct PaneSlot {
     pub rect: [f32; 4],
     pub pad: f32,
     pub focused: bool,
+    /// Enlace bajo el ratón con Cmd (se subraya).
+    pub link: Option<SelectionRange>,
 }
 
 /// Lo que publica el hilo principal para el render.
@@ -80,8 +82,15 @@ impl WindowShared {
 }
 
 /// Selección y marcas de bloque en coordenadas del panel.
-fn overlay(term: &Term, rows: usize, cols: usize) -> Overlay {
+fn overlay(term: &Term, rows: usize, cols: usize, link: Option<SelectionRange>) -> Overlay {
     let mut overlay = Overlay::default();
+    if let Some(range) = link {
+        for row in 0..rows {
+            if let Some((a, b)) = range.cols_on(term.visible_line(row), cols) {
+                overlay.links.push((row, a, b));
+            }
+        }
+    }
     if let Some(range) = term.selection_range() {
         for row in 0..rows {
             if let Some((a, b)) = range.cols_on(term.visible_line(row), cols) {
@@ -222,7 +231,7 @@ impl RenderTarget {
                 pad: slot.pad,
                 cursor,
                 modes,
-                overlay: overlay(&term, rows, cols),
+                overlay: overlay(&term, rows, cols, slot.link),
                 focused: slot.focused,
             });
         }

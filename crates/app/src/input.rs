@@ -368,6 +368,80 @@ pub fn encode_meta(text: &str) -> Vec<u8> {
     out
 }
 
+// --- Ratón ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseButton {
+    Left,
+    Middle,
+    Right,
+    WheelUp,
+    WheelDown,
+    /// Movimiento sin botón pulsado (modo `?1003`).
+    None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseAction {
+    Press,
+    Release,
+    Motion,
+}
+
+/// Codifica un evento de ratón para la aplicación. `col` y `row` empiezan
+/// en 0. Con `sgr` usa `CSI < … M/m` (`?1006`); si no, la forma clásica de
+/// xterm, que no llega más allá de la columna 223 (`None`).
+pub fn encode_mouse(
+    button: MouseButton,
+    action: MouseAction,
+    col: usize,
+    row: usize,
+    mods: Mods,
+    sgr: bool,
+) -> Option<Vec<u8>> {
+    let mut code: u32 = match button {
+        MouseButton::Left => 0,
+        MouseButton::Middle => 1,
+        MouseButton::Right => 2,
+        MouseButton::None => 3,
+        MouseButton::WheelUp => 64,
+        MouseButton::WheelDown => 65,
+    };
+    code += 4 * mods.shift as u32 + 8 * mods.alt as u32 + 16 * mods.ctrl as u32;
+    if action == MouseAction::Motion {
+        code += 32;
+    }
+    let (x, y) = (col + 1, row + 1);
+    if sgr {
+        let end = if action == MouseAction::Release {
+            'm'
+        } else {
+            'M'
+        };
+        return Some(format!("\x1b[<{code};{x};{y}{end}").into_bytes());
+    }
+    // Clásica: al soltar no se sabe qué botón (código 3).
+    if action == MouseAction::Release {
+        code = (code & !3) | 3;
+    }
+    if x + 32 > 255 || y + 32 > 255 {
+        return None;
+    }
+    Some(vec![
+        0x1b,
+        b'[',
+        b'M',
+        (32 + code) as u8,
+        (32 + x) as u8,
+        (32 + y) as u8,
+    ])
+}
+
+/// Avisos de foco (`?1004`).
+pub fn encode_focus(gained: bool) -> &'static [u8] {
+    if gained { b"\x1b[I" } else { b"\x1b[O" }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -563,5 +637,47 @@ mod tests {
         );
         assert_eq!(encode_modify_other_keys('a', NONE, 2), None);
         assert_eq!(encode_meta("b"), b"\x1bb");
+    }
+
+    #[test]
+    fn mouse_sgr_and_legacy() {
+        let m = |b, a, sgr| {
+            encode_mouse(b, a, 4, 2, NONE, sgr).map(|v| String::from_utf8_lossy(&v).into_owned())
+        };
+        assert_eq!(
+            m(MouseButton::Left, MouseAction::Press, true).unwrap(),
+            "\x1b[<0;5;3M"
+        );
+        assert_eq!(
+            m(MouseButton::Left, MouseAction::Release, true).unwrap(),
+            "\x1b[<0;5;3m"
+        );
+        assert_eq!(
+            m(MouseButton::Left, MouseAction::Motion, true).unwrap(),
+            "\x1b[<32;5;3M"
+        );
+        assert_eq!(
+            m(MouseButton::WheelDown, MouseAction::Press, true).unwrap(),
+            "\x1b[<65;5;3M"
+        );
+        assert_eq!(
+            m(MouseButton::None, MouseAction::Motion, true).unwrap(),
+            "\x1b[<35;5;3M"
+        );
+        let ctrl = Mods { ctrl: true, ..NONE };
+        assert_eq!(
+            encode_mouse(MouseButton::Right, MouseAction::Press, 0, 0, ctrl, true).unwrap(),
+            b"\x1b[<18;1;1M"
+        );
+        assert_eq!(
+            encode_mouse(MouseButton::Left, MouseAction::Press, 4, 2, NONE, false).unwrap(),
+            [0x1b, b'[', b'M', 32, 37, 35]
+        );
+        assert_eq!(
+            encode_mouse(MouseButton::Left, MouseAction::Release, 4, 2, NONE, false).unwrap(),
+            [0x1b, b'[', b'M', 35, 37, 35]
+        );
+        assert!(encode_mouse(MouseButton::Left, MouseAction::Press, 300, 0, NONE, false).is_none());
+        assert_eq!(encode_focus(true), b"\x1b[I");
     }
 }
