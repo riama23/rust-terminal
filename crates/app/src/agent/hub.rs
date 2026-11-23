@@ -61,6 +61,18 @@ impl Hub {
         changed
     }
 
+    /// El usuario contestó la petición `id` desde la interfaz.
+    pub fn resolved(&mut self, key: &str, id: u64) -> bool {
+        let Some(session) = self.sessions.iter_mut().find(|s| s.key == key) else {
+            return false;
+        };
+        let changed = session.resolved(id);
+        if changed {
+            model::sort(&mut self.sessions);
+        }
+        changed
+    }
+
     pub fn pane_of(&self, key: &str) -> Option<PaneId> {
         self.panes.get(key).copied()
     }

@@ -40,6 +40,8 @@ pub struct ContainerIvars {
     terminal: RefCell<Option<Retained<NSView>>>,
     left: RefCell<Panel>,
     right: RefCell<Panel>,
+    /// Barra bajo la terminal (attention bar); alto en puntos.
+    bottom: RefCell<Panel>,
 }
 
 define_class!(
@@ -69,6 +71,7 @@ impl ContainerView {
             terminal: RefCell::new(None),
             left: RefCell::new(None),
             right: RefCell::new(None),
+            bottom: RefCell::new(None),
         });
         // SAFETY: inicializador designado de NSView.
         unsafe { msg_send![super(this), initWithFrame: frame] }
@@ -99,6 +102,12 @@ impl ContainerView {
         self.replace(&self.ivars().right, panel);
     }
 
+    /// Barra bajo la terminal con su alto en puntos; `None` la quita. La
+    /// terminal cede ese alto: la barra queda fuera del área de la PTY.
+    pub fn set_bottom(&self, panel: Option<(&NSView, f64)>) {
+        self.replace(&self.ivars().bottom, panel);
+    }
+
     fn replace(&self, slot: &RefCell<Panel>, panel: Option<(&NSView, f64)>) {
         if let Some((old, _)) = slot.borrow_mut().take() {
             old.removeFromSuperview();
@@ -125,10 +134,17 @@ impl ContainerView {
         if let Some((view, _)) = ivars.left.borrow().as_ref() {
             view.setFrame(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(left_w, h)));
         }
+        let bottom_h = want(&ivars.bottom.borrow()).clamp(0.0, (h - 80.0).max(0.0));
         if let Some(term) = ivars.terminal.borrow().as_ref() {
             term.setFrame(NSRect::new(
+                NSPoint::new(term_x, bottom_h),
+                NSSize::new(term_w, h - bottom_h),
+            ));
+        }
+        if let Some((view, _)) = ivars.bottom.borrow().as_ref() {
+            view.setFrame(NSRect::new(
                 NSPoint::new(term_x, 0.0),
-                NSSize::new(term_w, h),
+                NSSize::new(term_w, bottom_h),
             ));
         }
         if let Some((view, _)) = ivars.right.borrow().as_ref() {

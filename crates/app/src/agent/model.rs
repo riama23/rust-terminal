@@ -163,6 +163,18 @@ impl AgentSession {
             )
     }
 
+    /// El usuario contestó la petición `id` desde la interfaz: la barra se
+    /// retira y el agente sigue. Devuelve `true` si era la pendiente.
+    pub fn resolved(&mut self, id: u64) -> bool {
+        if self.pending.as_ref().is_some_and(|p| p.id == id) {
+            self.pending = None;
+            self.status = Status::Working;
+            true
+        } else {
+            false
+        }
+    }
+
     fn apply_hook(&mut self, event: &str, payload: &Value) {
         // Mientras hay un permiso pendiente nada de esto lo contradice: solo lo
         // cierra la decisión, el plazo o el fin de la sesión.
@@ -300,6 +312,17 @@ mod tests {
             s.apply(&hook("PostToolUse", json!({})));
             assert_eq!(s.status, Status::Working);
         }
+    }
+
+    #[test]
+    fn contestar_desde_la_interfaz_retira_la_barra_y_sigue() {
+        let mut s = session();
+        s.apply(&perm(7, "Bash"));
+        assert!(!s.resolved(6), "otra petición");
+        assert!(s.resolved(7));
+        assert_eq!(s.status, Status::Working);
+        assert!(s.pending.is_none());
+        assert!(!s.resolved(7), "ya no estaba");
     }
 
     #[test]

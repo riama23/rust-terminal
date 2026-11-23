@@ -343,6 +343,17 @@ impl Workspace {
         }
     }
 
+    /// Da el foco a un panel, cambiando de pestaña si hace falta. `false` si
+    /// ningún panel tiene ese id.
+    pub fn focus_pane(&mut self, pane: PaneId) -> bool {
+        let Some(i) = self.tabs.iter().position(|t| t.panes().contains(&pane)) else {
+            return false;
+        };
+        self.active = i;
+        self.tabs[i].focused = pane;
+        true
+    }
+
     pub fn next(&mut self) {
         self.active = (self.active + 1) % self.tabs.len();
     }
@@ -521,5 +532,23 @@ mod tests {
         assert!(w.close_pane(3));
         assert_eq!(w.tabs.len(), 1);
         assert_eq!(w.all_panes(), [1]);
+    }
+
+    #[test]
+    fn focus_pane_changes_tab_and_focus() {
+        let mut w = Workspace::new(1);
+        w.tab_mut().split(1, Axis::Columns, 2);
+        w.new_tab(3);
+        assert_eq!(w.active, 1);
+        assert!(w.focus_pane(1));
+        assert_eq!((w.active, w.focused()), (0, 1));
+        assert!(w.focus_pane(3));
+        assert_eq!((w.active, w.focused()), (1, 3));
+        assert!(!w.focus_pane(99));
+        assert_eq!(
+            (w.active, w.focused()),
+            (1, 3),
+            "un id inexistente no cambia nada"
+        );
     }
 }

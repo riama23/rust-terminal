@@ -270,6 +270,53 @@ fn write_private(path: &Path, content: &str, mode: u32) -> io::Result<()> {
     f.write_all(content.as_bytes())
 }
 
+const DIR_PREFIX: &str = "rust-terminal-agents-";
+
+/// La carpeta de archivos de agentes de un proceso de la app.
+pub fn agents_dir(base: &Path, pid: u32) -> PathBuf {
+    base.join(format!("{DIR_PREFIX}{pid}"))
+}
+
+/// ¿Existe el proceso `pid`? (`kill(pid, 0)`: un permiso denegado también
+/// significa que existe.)
+pub fn process_alive(pid: u32) -> bool {
+    use rustix::io::Errno;
+    let Some(pid) = i32::try_from(pid)
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+    else {
+        return false;
+    };
+    match rustix::process::test_kill_process(pid) {
+        Ok(()) => true,
+        Err(e) => e == Errno::PERM,
+    }
+}
+
+/// Borra las carpetas `rust-terminal-agents-<pid>` de procesos que ya no
+/// existen (la app murió sin limpiar): contienen el token del broker.
+/// Devuelve cuántas borró.
+pub fn remove_stale_dirs(base: &Path, alive: impl Fn(u32) -> bool) -> usize {
+    let Ok(entries) = fs::read_dir(base) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|n| n.strip_prefix(DIR_PREFIX))
+            .and_then(|p| p.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if !alive(pid) && fs::remove_dir_all(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 /// Borra los archivos de un agente al darlo de baja.
 pub fn remove_agent_files(dir: &Path, key: &str) {
     let _ = fs::remove_file(dir.join(format!("statusline-{key}.sh")));
@@ -540,5 +587,47 @@ mod tests {
         remove_agent_files(&dir, &key);
         assert!(!files.settings.exists());
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn borra_solo_las_carpetas_de_procesos_muertos() {
+        let base = tmpdir("stale");
+        for pid in [111u32, 222, 333] {
+            let d = agents_dir(&base, pid);
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join("settings-x.json"), "token").unwrap();
+        }
+        // Cosas que no son nuestras no se tocan.
+        fs::create_dir_all(base.join("otra-cosa")).unwrap();
+        fs::create_dir_all(base.join("rust-terminal-agents-abc")).unwrap();
+        fs::write(
+            base.join("rust-terminal-agents-9"),
+            "archivo, no carpeta del formato",
+        )
+        .unwrap();
+
+        assert_eq!(remove_stale_dirs(&base, |pid| pid == 222), 2);
+        assert!(!agents_dir(&base, 111).exists());
+        assert!(agents_dir(&base, 222).exists(), "su proceso sigue vivo");
+        assert!(!agents_dir(&base, 333).exists());
+        assert!(base.join("otra-cosa").exists());
+        assert!(base.join("rust-terminal-agents-abc").exists());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn sin_carpeta_base_no_hay_nada_que_borrar() {
+        assert_eq!(
+            remove_stale_dirs(Path::new("/no/existe/seguro"), |_| false),
+            0
+        );
+    }
+
+    #[test]
+    fn nuestro_propio_proceso_esta_vivo_y_uno_inexistente_no() {
+        assert!(process_alive(std::process::id()));
+        assert!(!process_alive(0));
+        // Un pid muy alto que no existe.
+        assert!(!process_alive(4_000_000));
     }
 }

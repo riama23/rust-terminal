@@ -2,6 +2,8 @@
 //! y la shell del usuario en una PTY por panel.
 
 mod agent;
+mod agent_controller;
+mod agent_ui;
 mod config;
 mod container;
 mod font;
@@ -90,6 +92,14 @@ define_class!(
             true
         }
 
+        /// Al salir: borra los archivos (con tokens) de los agentes.
+        #[unsafe(method(applicationWillTerminate:))]
+        fn will_terminate(&self, _notification: &NSNotification) {
+            if let Some(view) = self.view() {
+                view.shutdown_agents();
+            }
+        }
+
         /// Cmd+Q: confirma si hay programas en marcha.
         #[unsafe(method(applicationShouldTerminate:))]
         fn should_terminate(&self, _app: &NSApplication) -> NSApplicationTerminateReply {
@@ -167,6 +177,7 @@ fn build_menu(app: &NSApplication, mtm: MainThreadMarker) {
         mtm,
         "Shell",
         vec![
+            menu_item(mtm, "Nuevo agente…", sel!(newAgent:), "n"),
             menu_item(mtm, "Nueva pestaña", sel!(newTab:), "t"),
             menu_item(mtm, "Dividir en vertical", sel!(splitVertical:), "d"),
             menu_item(mtm, "Dividir en horizontal", sel!(splitHorizontal:), "D"),
@@ -386,6 +397,28 @@ fn open_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
         unsafe { view.displayLinkWithTarget_selector(target, sel!(tick:)) }
     });
     view.start(waker.clone());
+    // Ayuda de verificación: `RT_AGENT_TEST="tarea"` lanza un agente al arrancar,
+    // en `RT_AGENT_DIR` (o la carpeta actual), sin pasar por el formulario.
+    if let Some(task) = std::env::var("RT_AGENT_TEST")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        use crate::agent::launch::{Isolation, LaunchSpec, StartMode};
+        let dir = std::env::var_os("RT_AGENT_DIR")
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_default();
+        let spec = LaunchSpec {
+            task,
+            isolation: Isolation::CurrentFolder,
+            mode: StartMode::Ask,
+            model: None,
+            title: Some("Agente de prueba".to_owned()),
+        };
+        if let Err(e) = view.launch_agent(spec, dir) {
+            eprintln!("RT_AGENT_TEST: {e}");
+        }
+    }
     if !errors.is_empty() {
         view.show_config_errors(&errors);
     }

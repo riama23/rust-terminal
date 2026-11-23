@@ -181,6 +181,17 @@ define_class!(
             }
         }
 
+        /// Hay eventos del broker de agentes (hilo principal).
+        #[unsafe(method(agentEvents))]
+        fn agent_events(&self) {
+            let mtm = MainThreadMarker::new().expect("hilo principal");
+            for window in NSApplication::sharedApplication(mtm).windows().iter() {
+                if let Some(view) = crate::container::terminal_view(&window) {
+                    view.agent_events();
+                }
+            }
+        }
+
         /// Cambió el título de una sesión o terminó alguna (hilo principal).
         #[unsafe(method(sessionsChanged))]
         fn sessions_changed(&self) {
