@@ -1,6 +1,7 @@
 //! Aplicación de macOS: una ventana con pestañas y paneles, render con Metal
 //! y la shell del usuario en una PTY por panel.
 
+mod agent;
 mod config;
 mod container;
 mod font;
