@@ -8,5 +8,5 @@ pub mod pty;
 pub mod term;
 
 pub use grid::{Cell, Color, Flags, Grid};
-pub use pty::Pty;
-pub use term::{Cursor, Term};
+pub use pty::{Pty, PtyReader, PtyWriter};
+pub use term::{Cursor, Modes, Term};

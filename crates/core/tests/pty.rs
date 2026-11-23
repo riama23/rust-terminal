@@ -58,3 +58,28 @@ fn child_has_controlling_terminal() {
     assert!(out.contains("/dev/ttys"), "salida: {out:?}");
     assert!(!out.contains("??"), "sin terminal de control: {out:?}");
 }
+
+#[test]
+fn split_reader_and_writer_work_from_different_threads() {
+    let pty = Pty::spawn(
+        "/bin/sh",
+        &["-c", "read x; echo \"got $x\"; stty size"],
+        no_env(),
+        80,
+        24,
+    )
+    .unwrap();
+    let (mut reader, mut writer, mut child) = pty.split().unwrap();
+    let handle = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        reader.read_to_end(&mut out).unwrap();
+        String::from_utf8_lossy(&out).into_owned()
+    });
+    writer.resize(90, 33).unwrap();
+    std::io::Write::write_all(&mut writer, b"ping\n").unwrap();
+    child.wait().unwrap();
+    drop(writer);
+    let out = handle.join().unwrap();
+    assert!(out.contains("got ping"), "salida: {out:?}");
+    assert!(out.contains("33 90"), "salida: {out:?}");
+}

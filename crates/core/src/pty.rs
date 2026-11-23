@@ -102,20 +102,71 @@ impl Pty {
     pub fn master(&self) -> BorrowedFd<'_> {
         self.master.as_fd()
     }
+
+    /// Separa la sesión en lectura, escritura y proceso hijo, para usarlos
+    /// desde hilos distintos. Ambos lados comparten el mismo maestro.
+    pub fn split(self) -> io::Result<(PtyReader, PtyWriter, Child)> {
+        let writer = PtyWriter {
+            master: self.master.try_clone()?,
+        };
+        let reader = PtyReader {
+            master: self.master,
+        };
+        Ok((reader, writer, self.child))
+    }
+}
+
+/// Lee del maestro. Cuando el hijo ha cerrado el esclavo, macOS puede
+/// devolver `EIO` en lugar de 0; se trata como EOF.
+fn read_master(master: &mut File, buf: &mut [u8]) -> io::Result<usize> {
+    match master.read(buf) {
+        Err(e) if e.raw_os_error() == Some(rustix::io::Errno::IO.raw_os_error()) => Ok(0),
+        other => other,
+    }
 }
 
 impl Read for Pty {
-    /// Lee del maestro. Cuando el hijo ha cerrado el esclavo, macOS puede
-    /// devolver `EIO` en lugar de 0; se trata como EOF.
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        match self.master.read(buf) {
-            Err(e) if e.raw_os_error() == Some(rustix::io::Errno::IO.raw_os_error()) => Ok(0),
-            other => other,
-        }
+        read_master(&mut self.master, buf)
     }
 }
 
 impl Write for Pty {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.master.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.master.flush()
+    }
+}
+
+/// Lado de lectura de una PTY separada con [`Pty::split`].
+pub struct PtyReader {
+    master: File,
+}
+
+impl Read for PtyReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        read_master(&mut self.master, buf)
+    }
+}
+
+/// Lado de escritura de una PTY separada con [`Pty::split`]: teclas, pegado,
+/// respuestas a consultas y cambios de tamaño.
+pub struct PtyWriter {
+    master: File,
+}
+
+impl PtyWriter {
+    /// Comunica el nuevo tamaño al hijo (`TIOCSWINSZ`, que envía `SIGWINCH`).
+    pub fn resize(&self, cols: u16, rows: u16) -> io::Result<()> {
+        tcsetwinsize(&self.master, winsize(cols, rows))?;
+        Ok(())
+    }
+}
+
+impl Write for PtyWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.master.write(buf)
     }

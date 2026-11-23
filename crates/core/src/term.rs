@@ -1,5 +1,9 @@
 //! Estado del terminal: interpreta las acciones de `vte` sobre la cuadrícula.
 
+use std::fmt::Write as _;
+use std::sync::OnceLock;
+
+use unicode_width::UnicodeWidthChar;
 use vte::{Params, Parser, Perform};
 
 use crate::grid::{Cell, Color, Flags, Grid};
@@ -11,6 +15,34 @@ pub struct Cursor {
     pub row: usize,
     pub col: usize,
     pub wrap_pending: bool,
+}
+
+/// Modos que afectan a la entrada o al renderizado y que tiene que consultar
+/// quien usa el núcleo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Modes {
+    /// DECCKM (`?1`): las flechas se envían como SS3 en lugar de CSI.
+    pub app_cursor: bool,
+    /// DECAWM (`?7`).
+    pub autowrap: bool,
+    /// DECTCEM (`?25`).
+    pub cursor_visible: bool,
+    /// `?2004`: el texto pegado va entre `ESC[200~` y `ESC[201~`.
+    pub bracketed_paste: bool,
+    /// Pantalla alternativa activa (`?47`, `?1047`, `?1049`).
+    pub alt_screen: bool,
+}
+
+impl Default for Modes {
+    fn default() -> Self {
+        Modes {
+            app_cursor: false,
+            autowrap: true,
+            cursor_visible: true,
+            bracketed_paste: false,
+            alt_screen: false,
+        }
+    }
 }
 
 /// Atributos con los que se escriben las celdas nuevas.
@@ -25,18 +57,36 @@ struct Pen {
 struct Saved {
     cursor: Cursor,
     pen: Pen,
+    line_drawing: bool,
 }
+
+/// Respuesta a DA1: VT220 con color ANSI, como xterm.
+const DA1_RESPONSE: &[u8] = b"\x1b[?62;22c";
+/// Respuesta a DA2: tipo 1 (VT220), versión 10, sin cartucho.
+const DA2_RESPONSE: &[u8] = b"\x1b[>1;10;0c";
 
 /// Estado sobre el que actúa el parser. Está separado de `Term` para poder
 /// tomar prestados a la vez el parser y el estado en `advance`.
 struct Screen {
+    /// Pantalla activa.
     grid: Grid,
+    /// La otra pantalla (la principal mientras la alternativa está activa).
+    inactive_grid: Grid,
     cursor: Cursor,
     pen: Pen,
     /// Región de scroll `[top, bottom]`, inclusive.
     top: usize,
     bottom: usize,
+    /// Cursor guardado (DECSC) de la pantalla activa y de la inactiva.
     saved: Option<Saved>,
+    inactive_saved: Option<Saved>,
+    modes: Modes,
+    /// G0 apunta al juego de gráficos de línea DEC (`ESC ( 0`).
+    line_drawing: bool,
+    title: Option<String>,
+    title_changed: bool,
+    /// Bytes que hay que devolver a la aplicación por la PTY.
+    responses: Vec<u8>,
     bell: bool,
 }
 
@@ -49,15 +99,7 @@ impl Term {
     pub fn new(cols: usize, rows: usize) -> Term {
         Term {
             parser: Parser::new(),
-            screen: Screen {
-                grid: Grid::new(cols, rows),
-                cursor: Cursor::default(),
-                pen: Pen::default(),
-                top: 0,
-                bottom: rows - 1,
-                saved: None,
-                bell: false,
-            },
+            screen: Screen::new(cols, rows),
         }
     }
 
@@ -70,8 +112,32 @@ impl Term {
         &self.screen.grid
     }
 
+    /// Llama a `f` con cada fila de la pantalla activa que cambió desde la
+    /// última llamada.
+    pub fn drain_damage(&mut self, f: impl FnMut(usize, &[Cell])) {
+        self.screen.grid.drain_damage(f);
+    }
+
     pub fn cursor(&self) -> Cursor {
         self.screen.cursor
+    }
+
+    pub fn modes(&self) -> Modes {
+        self.screen.modes
+    }
+
+    pub fn title(&self) -> Option<&str> {
+        self.screen.title.as_deref()
+    }
+
+    /// Devuelve si el título cambió desde la última llamada.
+    pub fn take_title_changed(&mut self) -> bool {
+        std::mem::take(&mut self.screen.title_changed)
+    }
+
+    /// Bytes pendientes de enviar a la aplicación (respuestas a DA, DSR…).
+    pub fn take_responses(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.screen.responses)
     }
 
     /// Devuelve si sonó la campana desde la última llamada y la rearma.
@@ -79,10 +145,12 @@ impl Term {
         std::mem::take(&mut self.screen.bell)
     }
 
-    /// Cambia el tamaño. La región de scroll vuelve a ser la pantalla entera.
+    /// Cambia el tamaño de ambas pantallas. La región de scroll vuelve a ser
+    /// la pantalla entera.
     pub fn resize(&mut self, cols: usize, rows: usize) {
         let s = &mut self.screen;
         s.grid.resize(cols, rows);
+        s.inactive_grid.resize(cols, rows);
         s.top = 0;
         s.bottom = rows - 1;
         s.cursor.row = s.cursor.row.min(rows - 1);
@@ -96,7 +164,12 @@ impl Term {
         let grid = &self.screen.grid;
         let mut lines: Vec<String> = (0..grid.rows())
             .map(|r| {
-                let line: String = grid.row(r).iter().map(|c| c.ch).collect();
+                let line: String = grid
+                    .row(r)
+                    .iter()
+                    .filter(|c| !c.flags.contains(Flags::WIDE_SPACER))
+                    .map(|c| c.ch)
+                    .collect();
                 line.trim_end_matches(' ').to_owned()
             })
             .collect();
@@ -129,7 +202,90 @@ fn byte(v: u16) -> u8 {
     v.min(255) as u8
 }
 
+/// Registra en stderr una secuencia que el núcleo no interpreta, si la
+/// variable de entorno `RT_LOG_UNHANDLED` está definida.
+fn log_unhandled(args: std::fmt::Arguments) {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    if *ENABLED.get_or_init(|| std::env::var_os("RT_LOG_UNHANDLED").is_some()) {
+        eprintln!("[sin soporte] {args}");
+    }
+}
+
+fn describe_params(params: &Params) -> String {
+    let mut out = String::new();
+    for (i, p) in params.iter().enumerate() {
+        if i > 0 {
+            out.push(';');
+        }
+        for (j, v) in p.iter().enumerate() {
+            if j > 0 {
+                out.push(':');
+            }
+            let _ = write!(out, "{v}");
+        }
+    }
+    out
+}
+
+/// Traduce un carácter del juego de gráficos de línea DEC (G0 = `ESC ( 0`).
+fn dec_line_drawing(c: char) -> char {
+    match c {
+        '_' => ' ',
+        '`' => '◆',
+        'a' => '▒',
+        'b' => '␉',
+        'c' => '␌',
+        'd' => '␍',
+        'e' => '␊',
+        'f' => '°',
+        'g' => '±',
+        'h' => '␤',
+        'i' => '␋',
+        'j' => '┘',
+        'k' => '┐',
+        'l' => '┌',
+        'm' => '└',
+        'n' => '┼',
+        'o' => '⎺',
+        'p' => '⎻',
+        'q' => '─',
+        'r' => '⎼',
+        's' => '⎽',
+        't' => '├',
+        'u' => '┤',
+        'v' => '┴',
+        'w' => '┬',
+        'x' => '│',
+        'y' => '≤',
+        'z' => '≥',
+        '{' => 'π',
+        '|' => '≠',
+        '}' => '£',
+        '~' => '·',
+        c => c,
+    }
+}
+
 impl Screen {
+    fn new(cols: usize, rows: usize) -> Screen {
+        Screen {
+            grid: Grid::new(cols, rows),
+            inactive_grid: Grid::new(cols, rows),
+            cursor: Cursor::default(),
+            pen: Pen::default(),
+            top: 0,
+            bottom: rows - 1,
+            saved: None,
+            inactive_saved: None,
+            modes: Modes::default(),
+            line_drawing: false,
+            title: None,
+            title_changed: false,
+            responses: Vec::new(),
+            bell: false,
+        }
+    }
+
     fn cols(&self) -> usize {
         self.grid.cols()
     }
@@ -167,6 +323,23 @@ impl Screen {
         } else if self.cursor.row > 0 {
             self.cursor.row -= 1;
         }
+    }
+
+    /// Escribe una celda deshaciendo el par ancho que pudiera romper: si se
+    /// pisa una mitad de un carácter de doble ancho, la otra queda en blanco.
+    fn write_cell(&mut self, row: usize, col: usize, cell: Cell) {
+        let old = self.grid.cell(row, col).flags;
+        if old.contains(Flags::WIDE) && col + 1 < self.cols() {
+            let next = self.grid.cell_mut(row, col + 1);
+            next.ch = ' ';
+            next.flags.remove(Flags::WIDE_SPACER);
+        }
+        if old.contains(Flags::WIDE_SPACER) && col > 0 {
+            let prev = self.grid.cell_mut(row, col - 1);
+            prev.ch = ' ';
+            prev.flags.remove(Flags::WIDE);
+        }
+        *self.grid.cell_mut(row, col) = cell;
     }
 
     /// Límites verticales para CUU/CUD: la región si el cursor está dentro.
@@ -224,6 +397,7 @@ impl Screen {
         self.saved = Some(Saved {
             cursor: self.cursor,
             pen: self.pen,
+            line_drawing: self.line_drawing,
         });
     }
 
@@ -231,27 +405,82 @@ impl Screen {
         match self.saved {
             Some(saved) => {
                 self.pen = saved.pen;
+                self.line_drawing = saved.line_drawing;
                 self.move_to(saved.cursor.row, saved.cursor.col);
                 self.cursor.wrap_pending = saved.cursor.wrap_pending;
             }
             None => {
                 self.pen = Pen::default();
+                self.line_drawing = false;
                 self.move_to(0, 0);
             }
         }
     }
 
+    /// Cambia entre la pantalla principal y la alternativa. Cada pantalla
+    /// conserva su propio cursor guardado.
+    fn switch_screen(&mut self, alt: bool, clear_alt: bool) {
+        if self.modes.alt_screen == alt {
+            return;
+        }
+        std::mem::swap(&mut self.grid, &mut self.inactive_grid);
+        std::mem::swap(&mut self.saved, &mut self.inactive_saved);
+        self.modes.alt_screen = alt;
+        if alt && clear_alt {
+            let rows = self.rows();
+            self.grid.clear_rows(0, rows, Cell::default());
+        }
+        self.grid.mark_all_dirty();
+    }
+
+    fn set_private_mode(&mut self, params: &Params, on: bool) {
+        for p in params.iter() {
+            match p[0] {
+                1 => self.modes.app_cursor = on,
+                7 => {
+                    self.modes.autowrap = on;
+                    if !on {
+                        self.cursor.wrap_pending = false;
+                    }
+                }
+                // Parpadeo del cursor: no se implementa (rompería el reposo sin frames).
+                12 => {}
+                25 => self.modes.cursor_visible = on,
+                47 => self.switch_screen(on, false),
+                1047 => self.switch_screen(on, true),
+                1049 => {
+                    if on {
+                        self.save_cursor();
+                        self.switch_screen(true, true);
+                    } else {
+                        self.switch_screen(false, false);
+                        self.restore_cursor();
+                    }
+                }
+                2004 => self.modes.bracketed_paste = on,
+                n => log_unhandled(format_args!(
+                    "modo privado ?{n} {}",
+                    if on { "h" } else { "l" }
+                )),
+            }
+        }
+    }
+
+    fn device_status_report(&mut self, kind: u16) {
+        match kind {
+            5 => self.responses.extend_from_slice(b"\x1b[0n"),
+            6 => {
+                let Cursor { row, col, .. } = self.cursor;
+                let _ = write!(Bytes(&mut self.responses), "\x1b[{};{}R", row + 1, col + 1);
+            }
+            n => log_unhandled(format_args!("DSR {n}")),
+        }
+    }
+
     fn reset(&mut self) {
-        let (cols, rows) = (self.cols(), self.rows());
-        *self = Screen {
-            grid: Grid::new(cols, rows),
-            cursor: Cursor::default(),
-            pen: Pen::default(),
-            top: 0,
-            bottom: rows - 1,
-            saved: None,
-            bell: false,
-        };
+        let title = self.title.take();
+        *self = Screen::new(self.cols(), self.rows());
+        self.title = title;
     }
 
     fn sgr(&mut self, params: &Params) {
@@ -298,10 +527,20 @@ impl Screen {
                         }
                     }
                 }
-                _ => {}
+                n => log_unhandled(format_args!("SGR {n}")),
             }
             i += 1;
         }
+    }
+}
+
+/// Adaptador para usar `write!` sobre un `Vec<u8>` sin pasar por `io::Write`.
+struct Bytes<'a>(&'a mut Vec<u8>);
+
+impl std::fmt::Write for Bytes<'_> {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        self.0.extend_from_slice(s.as_bytes());
+        Ok(())
     }
 }
 
@@ -336,21 +575,71 @@ fn extended_color_semicolon(rest: &[&[u16]]) -> (Option<Color>, usize) {
 
 impl Perform for Screen {
     fn print(&mut self, c: char) {
+        let c = if self.line_drawing {
+            dec_line_drawing(c)
+        } else {
+            c
+        };
+        // Los caracteres de ancho 0 (combinantes, ZWJ…) se descartan por ahora.
+        let width = match c.width() {
+            Some(w @ 1..=2) => w,
+            _ => return,
+        };
+        let cols = self.cols();
+        if width > cols {
+            return;
+        }
         if self.cursor.wrap_pending {
             self.cursor.col = 0;
             self.linefeed();
         }
+        // Un carácter ancho que no cabe en la última columna salta de línea antes.
+        if width == 2 && self.cursor.col + 1 == cols {
+            if self.modes.autowrap {
+                let blank = self.blank();
+                self.write_cell(self.cursor.row, self.cursor.col, blank);
+                self.cursor.col = 0;
+                self.linefeed();
+            } else {
+                self.cursor.col = cols - 2;
+            }
+        }
+
         let Pen { fg, bg, flags } = self.pen;
-        *self.grid.cell_mut(self.cursor.row, self.cursor.col) = Cell {
-            ch: c,
-            fg,
-            bg,
-            flags,
-        };
-        if self.cursor.col + 1 == self.cols() {
-            self.cursor.wrap_pending = true;
+        let Cursor { row, col, .. } = self.cursor;
+        let mut cell_flags = flags;
+        if width == 2 {
+            cell_flags.insert(Flags::WIDE);
+        }
+        self.write_cell(
+            row,
+            col,
+            Cell {
+                ch: c,
+                fg,
+                bg,
+                flags: cell_flags,
+            },
+        );
+        if width == 2 {
+            self.write_cell(
+                row,
+                col + 1,
+                Cell {
+                    ch: ' ',
+                    fg,
+                    bg,
+                    flags: flags | Flags::WIDE_SPACER,
+                },
+            );
+        }
+
+        let next = col + width;
+        if next >= cols {
+            self.cursor.col = cols - 1;
+            self.cursor.wrap_pending = self.modes.autowrap;
         } else {
-            self.cursor.col += 1;
+            self.cursor.col = next;
         }
     }
 
@@ -371,34 +660,78 @@ impl Perform for Screen {
                 self.cursor.col = 0;
                 self.cursor.wrap_pending = false;
             }
-            _ => {}
+            // SO/SI (cambio a G1/G0): sin soporte de G1.
+            0x0E | 0x0F => {}
+            b => log_unhandled(format_args!("C0 0x{b:02x}")),
         }
     }
 
     fn esc_dispatch(&mut self, intermediates: &[u8], _ignore: bool, byte: u8) {
-        if !intermediates.is_empty() {
-            return;
-        }
-        match byte {
-            b'7' => self.save_cursor(),
-            b'8' => self.restore_cursor(),
-            b'D' => self.linefeed(),
-            b'E' => {
+        match (intermediates, byte) {
+            ([], b'7') => self.save_cursor(),
+            ([], b'8') => self.restore_cursor(),
+            ([], b'D') => self.linefeed(),
+            ([], b'E') => {
                 self.cursor.col = 0;
                 self.linefeed();
             }
-            b'M' => self.reverse_index(),
-            b'c' => self.reset(),
-            _ => {}
+            ([], b'M') => self.reverse_index(),
+            ([], b'c') => self.reset(),
+            // ST: cierre de OSC/DCS, que `vte` ya ha despachado.
+            ([], b'\\') => {}
+            // Teclado numérico en modo aplicación/numérico: sin efecto por ahora.
+            ([], b'=' | b'>') => {}
+            ([b'('], b'0') => self.line_drawing = true,
+            ([b'('], b'B') => self.line_drawing = false,
+            _ => log_unhandled(format_args!(
+                "ESC {}{}",
+                String::from_utf8_lossy(intermediates),
+                byte as char
+            )),
         }
     }
 
-    fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
-        // Los modos privados (`CSI ? …`) y el resto de variantes con
-        // intermedios llegan en hitos posteriores.
-        if !intermediates.is_empty() {
-            return;
+    fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
+        match params.first() {
+            Some(&(b"0" | b"2")) => {
+                let title = params[1..]
+                    .iter()
+                    .map(|p| String::from_utf8_lossy(p))
+                    .collect::<Vec<_>>()
+                    .join(";");
+                self.title = Some(title);
+                self.title_changed = true;
+            }
+            // Título del icono: no aplica en macOS.
+            Some(&b"1") => {}
+            Some(kind) => log_unhandled(format_args!("OSC {}", String::from_utf8_lossy(kind))),
+            None => {}
         }
+    }
+
+    fn hook(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
+        log_unhandled(format_args!(
+            "DCS {}{}{action}",
+            String::from_utf8_lossy(intermediates),
+            describe_params(params)
+        ));
+    }
+
+    fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
+        match (intermediates, action) {
+            ([], _) => {}
+            ([b'?'], 'h') => return self.set_private_mode(params, true),
+            ([b'?'], 'l') => return self.set_private_mode(params, false),
+            ([b'>'], 'c') => return self.responses.extend_from_slice(DA2_RESPONSE),
+            _ => {
+                return log_unhandled(format_args!(
+                    "CSI {}{}{action}",
+                    String::from_utf8_lossy(intermediates),
+                    describe_params(params)
+                ));
+            }
+        }
+
         let Cursor { row, col, .. } = self.cursor;
         let n = param(params, 0, 1);
         match action {
@@ -449,6 +782,7 @@ impl Perform for Screen {
                 }
                 self.move_to(row, 0);
             }
+            'L' | 'M' => {}
             'S' => {
                 let blank = self.blank();
                 self.grid.scroll_up(self.top, self.bottom, n, blank);
@@ -457,11 +791,13 @@ impl Perform for Screen {
                 let blank = self.blank();
                 self.grid.scroll_down(self.top, self.bottom, n, blank);
             }
+            'c' if raw(params, 0) == 0 => self.responses.extend_from_slice(DA1_RESPONSE),
+            'n' => self.device_status_report(raw(params, 0)),
             'r' => self.set_scroll_region(params),
             'm' => self.sgr(params),
             's' => self.save_cursor(),
             'u' => self.restore_cursor(),
-            _ => {}
+            _ => log_unhandled(format_args!("CSI {}{action}", describe_params(params))),
         }
     }
 }
@@ -479,6 +815,12 @@ mod tests {
     fn pos(t: &Term) -> (usize, usize) {
         let c = t.cursor();
         (c.row, c.col)
+    }
+
+    fn dirty_rows(t: &mut Term) -> Vec<usize> {
+        let mut rows = Vec::new();
+        t.drain_damage(|i, _| rows.push(i));
+        rows
     }
 
     #[test]
@@ -521,6 +863,14 @@ mod tests {
     fn cr_cancels_wrap_pending() {
         let t = term(3, 2, "abc\rX");
         assert_eq!(t.snapshot_text(), "Xbc");
+    }
+
+    #[test]
+    fn autowrap_disabled_overwrites_last_column() {
+        let t = term(3, 2, "\x1b[?7labcde");
+        assert_eq!(t.snapshot_text(), "abe");
+        assert_eq!(pos(&t), (0, 2));
+        assert!(!t.modes().autowrap);
     }
 
     #[test]
@@ -709,7 +1059,7 @@ mod tests {
         let t = term(
             10,
             2,
-            "a\x1b[?1049h\x1b[>4;1m\x1b]0;título\x07\x1bPqdcs\x1b\\\x1b[99zb\x1b(Bc",
+            "a\x1b[?9999h\x1b[>4;1m\x1b]777;x\x07\x1bPqdcs\x1b\\\x1b[99zb\x1b(Bc",
         );
         assert_eq!(t.snapshot_text(), "abc");
     }
@@ -728,5 +1078,123 @@ mod tests {
         assert_eq!(pos(&t), (1, 3));
         assert_eq!(t.grid().cols(), 4);
         assert_eq!(t.grid().rows(), 2);
+    }
+
+    #[test]
+    fn wide_chars_take_two_cells() {
+        let t = term(10, 1, "a日b");
+        assert_eq!(t.snapshot_text(), "a日b");
+        assert!(t.grid().cell(0, 1).flags.contains(Flags::WIDE));
+        assert!(t.grid().cell(0, 2).flags.contains(Flags::WIDE_SPACER));
+        assert_eq!(t.grid().cell(0, 3).ch, 'b');
+        assert_eq!(pos(&t), (0, 4));
+    }
+
+    #[test]
+    fn emoji_is_wide() {
+        let t = term(10, 1, "🙂x");
+        assert_eq!(t.grid().cell(0, 2).ch, 'x');
+    }
+
+    #[test]
+    fn wide_char_at_last_column_wraps_first() {
+        let t = term(4, 2, "abc日");
+        assert_eq!(t.snapshot_text(), "abc\n日");
+        assert_eq!(pos(&t), (1, 2));
+    }
+
+    #[test]
+    fn wide_char_filling_last_two_columns_sets_wrap_pending() {
+        let t = term(4, 2, "ab日");
+        assert_eq!(pos(&t), (0, 3));
+        assert!(t.cursor().wrap_pending);
+    }
+
+    #[test]
+    fn overwriting_half_of_wide_char_clears_the_other_half() {
+        // Pisar la primera mitad.
+        let t = term(6, 1, "日本\x1b[1;1Hx");
+        assert_eq!(t.snapshot_text(), "x 本");
+        assert!(!t.grid().cell(0, 1).flags.contains(Flags::WIDE_SPACER));
+        // Pisar la segunda mitad.
+        let t = term(6, 1, "日本\x1b[1;2Hx");
+        assert_eq!(t.snapshot_text(), " x本");
+        assert!(!t.grid().cell(0, 0).flags.contains(Flags::WIDE));
+    }
+
+    #[test]
+    fn zero_width_chars_are_dropped() {
+        let t = term(5, 1, "e\u{301}x");
+        assert_eq!(t.snapshot_text(), "ex");
+    }
+
+    #[test]
+    fn alt_screen_1049_round_trip() {
+        let mut t = term(10, 3, "main\r\nprompt$ ");
+        let before = pos(&t);
+        t.advance(b"\x1b[?1049h");
+        assert!(t.modes().alt_screen);
+        assert_eq!(t.snapshot_text(), "");
+        t.advance(b"\x1b[2;2Hvim");
+        assert_eq!(t.snapshot_text(), "\n vim");
+        t.advance(b"\x1b[?1049l");
+        assert!(!t.modes().alt_screen);
+        assert_eq!(t.snapshot_text(), "main\nprompt$");
+        assert_eq!(pos(&t), before);
+    }
+
+    #[test]
+    fn alt_screen_47_keeps_contents_and_marks_dirty() {
+        let mut t = term(5, 2, "\x1b[?47hx\x1b[?47l");
+        dirty_rows(&mut t);
+        t.advance(b"\x1b[?47h");
+        assert_eq!(t.snapshot_text(), "x");
+        assert_eq!(dirty_rows(&mut t), [0, 1]);
+    }
+
+    #[test]
+    fn private_modes() {
+        let mut t = Term::new(5, 1);
+        assert_eq!(t.modes(), Modes::default());
+        t.advance(b"\x1b[?1;2004h\x1b[?25l");
+        let m = t.modes();
+        assert!(m.app_cursor && m.bracketed_paste && !m.cursor_visible);
+        t.advance(b"\x1b[?1;2004l\x1b[?25h");
+        assert_eq!(t.modes(), Modes::default());
+    }
+
+    #[test]
+    fn device_attributes_and_status_reports() {
+        let mut t = term(10, 5, "\x1b[c\x1b[>c\x1b[5n\x1b[3;4H\x1b[6n");
+        assert_eq!(
+            t.take_responses(),
+            b"\x1b[?62;22c\x1b[>1;10;0c\x1b[0n\x1b[3;4R".to_vec()
+        );
+        assert!(t.take_responses().is_empty());
+    }
+
+    #[test]
+    fn title_from_osc() {
+        let mut t = term(5, 1, "\x1b]2;mi;título\x07");
+        assert_eq!(t.title(), Some("mi;título"));
+        assert!(t.take_title_changed());
+        assert!(!t.take_title_changed());
+        t.advance(b"\x1b]0;otro\x1b\\");
+        assert_eq!(t.title(), Some("otro"));
+    }
+
+    #[test]
+    fn dec_line_drawing_charset() {
+        let t = term(5, 1, "\x1b(0lqk\x1b(Bq");
+        assert_eq!(t.snapshot_text(), "┌─┐q");
+    }
+
+    #[test]
+    fn damage_tracks_changed_rows() {
+        let mut t = Term::new(5, 3);
+        dirty_rows(&mut t);
+        t.advance(b"\x1b[2;1Hx");
+        assert_eq!(dirty_rows(&mut t), [1]);
+        assert!(dirty_rows(&mut t).is_empty());
     }
 }

@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 vte = "0.15"
 rustix = { version = "1.1", features = ["pty", "process", "termios", "fs"] }
+unicode-width = "0.2"

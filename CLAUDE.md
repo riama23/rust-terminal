@@ -6,25 +6,57 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Workspace de Rust (edition 2024) con dos crates. Sus nombres son provisionales hasta que se decida el nombre del producto:
 
-- `crates/core` → `rust-terminal-core`: PTY (`pty`), cuadrícula (`grid`) y estado más parser `vte` (`term`). No puede depender de nada de interfaz ni de macOS más allá de POSIX.
-- `crates/app` → `rust-terminal`: el binario. En M1 es solo una prueba de humo sin interfaz; en M2 pasa a ser la app de AppKit y Metal.
+- `crates/core` → `rust-terminal-core`: PTY (`pty`), cuadrícula con filas sucias (`grid`) y estado más parser `vte` (`term`). No puede depender de nada de interfaz ni de macOS más allá de POSIX. Incluye el binario `bench-core`.
+- `crates/app` → `rust-terminal`: la app de AppKit y Metal.
+  - `main`: arranque de la app, menú y ventana. La ventana se crea en `applicationDidFinishLaunching:`.
+  - `view`: `NSView` con `NSTextInputClient`, que se encarga del teclado, el pegado y el redimensionado.
+  - `session`: los hilos.
+  - `renderer`: Metal, con un atlas de glifos y un draw instanciado de quads.
+  - `font`: Core Text.
+  - `input`: codificación de teclas, pura y con tests.
+  - `palette`: los colores.
 
 El diseño de abajo está acordado con el usuario; los temas de "Abierto" no se deciden sin preguntar.
 
 **Hoja de ruta de la v1:**
 - **M1, hecho:** núcleo con PTY, `vte` y cuadrícula.
-- **M2:** ventana con AppKit, Metal y Core Text; teclado, redimensionado y pantalla alternativa.
-- **M3:** hilos, `CADisplayLink` y benchmarks.
-- **M4:** scrollback y bloques con OSC 133 y zsh.
+- **M2+M3, fusionados, implementados y en verificación manual** (lista en `docs/verificacion-m2-m3.md`):
+  - ventana con AppKit, Metal y Core Text;
+  - teclado y redimensionado;
+  - pantalla alternativa y modos DEC;
+  - hilos con `CADisplayLink` y cero frames en reposo;
+  - benchmarks propios;
+  - el `.app`.
+- **M4:** scrollback, bloques con OSC 133 (y OSC 7) e inyección para zsh; selección con ratón, Cmd+C y scroll con trackpad.
 - **M5:** pestañas y paneles.
-- **M6:** DEC 2026, Kitty keyboard, OSC 8 y 52, y notificaciones.
-- **M7:** configuración TOML.
+- **M6:** DEC 2026, Kitty keyboard, OSC 8 y 52, notificaciones y reporte de ratón (`?1000`/`?1002`/`?1006`).
+- **M7:** configuración TOML (fuente, colores, Option como Meta…).
+- **Pospuesto:** comparación con Ghostty y Alacritty. Hay que instalarlos, y Java para Typometer.
+
+**Modelo de hilos (`crates/app/src/session.rs`):**
+- **Lector de la PTY:** hace `advance` por lotes con el `Mutex<Term>` tomado, escribe las respuestas (DA/DSR) y pide un frame.
+- **Render:** tiene su propio `NSRunLoop` y un `CADisplayLink`, creado por la vista y enganchado con `performSelector:onThread:`.
+  - En cada tick copia las filas sucias y pinta.
+  - Si no hay cambios, pausa el display link.
+  - El protocolo de `dirty`/`running` en `on_tick` y `Waker::request_frame` evita perder avisos; si se cambia, hay que conservar esa propiedad.
+- **macOS no dispara el display link si la ventana está tapada:** una ventana lanzada desde otra app que queda detrás no pinta hasta que se ve.
 
 **Pendiente en el núcleo:**
-- Todos los caracteres ocupan 1 celda; los anchos (CJK y emoji) se tratan en M2.
-- Los CSI con intermedios, incluidos los modos privados `CSI ?`, se ignoran.
+- Los caracteres de ancho 0 (combinantes, ZWJ) se descartan.
+- Solo existe G0, con ASCII o gráficos de línea DEC. SO/SI no tienen efecto.
 - ED 3 se ignora hasta que exista el scrollback.
+- No hay reflow al redimensionar; llega con el scrollback.
 - macOS no acepta `O_CLOEXEC` en `posix_openpt`, así que se pone después con `fcntl`. Con varias sesiones (M5), un `fork` concurrente podría heredar el maestro de otra; hay que revisarlo entonces.
+- **Throughput inicial de `bench-core`:** 115–185 MiB/s, sin optimizar todavía.
+
+**Pendiente en la app:**
+- El texto en composición no se dibuja: tras `´` no aparece nada hasta la segunda tecla.
+- **Riesgo de bloqueo con pegados grandes:**
+  - El hilo principal mantiene tomado `writer` mientras escribe en la PTY, y esa escritura puede bloquearse.
+  - Si en ese momento la aplicación manda una consulta, el lector espera al mismo mutex para responder y deja de leer.
+  - El hijo se queda bloqueado al escribir y todo se atasca.
+  - Es poco probable; se resolverá con una cola de escritura.
+- Si `LANG` no está definida (app abierta desde el Finder), se le da a la shell un locale `<idioma del sistema>.UTF-8` o `en_US.UTF-8`.
 
 ## Qué es
 
@@ -75,5 +107,15 @@ Un **emulador de terminal para macOS** escrito en Rust (no una shell: por dentro
 - Tests: `cargo test` · un crate: `cargo test -p rust-terminal-core` · un solo test: `cargo test <nombre_del_test>`. Los tests de `crates/core/tests/pty.rs` lanzan procesos reales (`/bin/sh`) en una PTY.
 - Lint: `cargo clippy --all-targets`
 - Formato: `cargo fmt` (comprobar sin modificar: `cargo fmt --check`)
+- **App empaquetada:** `scripts/bundle.sh [debug|release]` genera `target/<perfil>/RustTerminal.app`, con firma ad hoc y nombre provisional.
+  - Para probarla con logs: `open -n --stderr /tmp/rt.log --env RT_FRAME_STATS=1 target/debug/RustTerminal.app`.
+- **Benchmarks:**
+  - `scripts/bench.sh core` es el microbenchmark del núcleo.
+  - `scripts/bench.sh vtebench` hay que ejecutarlo dentro de la terminal que se quiere medir. Usa `vtebench` fijado a un commit.
+  - Los resultados se guardan en `target/bench/`.
+- **Render a imagen** para revisarlo a ojo: `RT_RENDER_DUMP=/tmp/render.bmp cargo test -p rust-terminal dump -- --ignored`.
+- **Variables de depuración:**
+  - `RT_LOG_UNHANDLED=1`: muestra en stderr las secuencias que el núcleo ignora.
+  - `RT_FRAME_STATS=1`: muestra los frames por segundo.
 
 Rust está instalado con rustup en `~/.cargo/bin`. Si `cargo` no aparece en el PATH de un shell no interactivo, ejecuta antes `. "$HOME/.cargo/env"`.
