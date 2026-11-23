@@ -17,6 +17,8 @@ Workspace de Rust (edition 2024) con dos crates. Sus nombres son provisionales h
   - `font`: Core Text.
   - `input`: codificación de teclas, pura y con tests.
   - `palette`: los colores.
+  - `config`: tabla única de opciones (`OPTIONS`), de la que salen los valores por defecto, la validación y `docs/configuracion.md`. **Una opción nueva se añade en `OPTIONS` y en `Config::set`.** Después se regenera la documentación con `RT_UPDATE_DOCS=1 cargo test -p rust-terminal config`; un test falla si no se ha hecho.
+  - `watcher`: vigila la configuración con kqueue (sin sondeo) y avisa al hilo principal (`configChanged`).
   - `notify`: notificaciones con `UNUserNotificationCenter`. Solo funcionan desde el `.app`; con `cargo run` van a stderr.
   - `shell`: inyección para zsh. Los scripts están en `crates/app/shell/zsh/`.
 
@@ -44,7 +46,10 @@ El diseño de abajo está acordado con el usuario; los temas de "Abierto" no se 
   - OSC 52 solo de escritura;
   - notificaciones (OSC 9, 777 y 99, y comandos de más de 10 s) con la ventana inactiva;
   - la campana hace rebotar el icono del Dock.
-- **M7:** configuración TOML (fuente, colores, qué Option es Meta, permisos de OSC 52, aviso de comandos largos…).
+- **M7, implementado y en verificación manual** (lista en `docs/verificacion-m7.md`): configuración TOML con recarga en caliente. Cubre fuente, colores, margen, shell, historial, portapapeles, notificaciones y campana. El teclado todavía no es configurable.
+- **Pendiente para cerrar la v1:**
+  - la comparación de rendimiento con Ghostty y Alacritty;
+  - el criterio de terminada: sustituir a Warp durante una semana.
 - **Pospuesto:** comparación con Ghostty y Alacritty. Hay que instalarlos, y Java para Typometer.
 
 **Modelo de hilos (`session.rs` y `window.rs`):**
@@ -126,7 +131,9 @@ Un **emulador de terminal para macOS** escrito en Rust (no una shell: por dentro
 
 ## Abierto (no decidir sin preguntar)
 
-- Nombre del producto y, con él, la ruta de configuración.
+- **Nombre del producto.** Mientras tanto se usa `rust-terminal`, centralizado en `PRODUCT_NAME` (`crates/core/src/lib.rs`). De esa constante salen la ruta de configuración, el `.app` (`scripts/bundle.sh` la lee), el identificador del bundle, el título por defecto y XTVERSION.
+  - Al decidirlo se renombra todo eso, pero no los crates.
+  - Hay que migrar la configuración desde `~/.config/rust-terminal/`.
 - API de control por agentes (v2): si será CLI, socket o MCP; modelo de seguridad; estabilidad de la API.
 - Límite concreto de memoria del scrollback.
 - Terminfo propio, integración con bash y fish, ventana de ajustes, paleta de comandos y temas avanzados.

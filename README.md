@@ -68,14 +68,43 @@ La terminal abre tu shell (`$SHELL`, o `/bin/zsh` si no está definida) como she
 - **Enlaces:** mantén Cmd para ver subrayados los enlaces y las URL; Cmd+clic los abre.
 - **Portapapeles:** los programas pueden copiar al portapapeles (OSC 52, útil por ssh o en tmux), pero no pueden leerlo.
 - **Notificaciones:** con la ventana en segundo plano, los programas pueden mostrar notificaciones (Claude Code, por ejemplo). También avisa cuando termina un comando de más de 10 segundos. Funcionan al abrir la app como `.app`; la primera vez, macOS pide permiso.
-- **Configuración:** la fuente es SF Mono de 13 pt y los colores son fijos. Ambas cosas se podrán configurar más adelante.
+
+## Configuración
+
+La terminal lee `~/.config/rust-terminal/config.toml`. El archivo es opcional y los cambios se aplican al guardarlo, sin reiniciar. Un ejemplo:
+
+```toml
+[font]
+family = "JetBrains Mono"   # vacío: SF Mono
+size = 14
+
+[colors]
+background = "#101014"
+foreground = "#e0e0e0"
+
+[shell]
+program = "/bin/zsh"        # vacío: la de $SHELL
+
+[scrollback]
+lines = 20000
+
+[clipboard]
+read = "ask"                # deny (por defecto), ask o allow
+
+[notifications]
+long_command_seconds = 30   # 0: no avisar
+```
+
+- **Opciones disponibles:** [docs/configuracion.md](docs/configuracion.md) las describe todas, con su tipo, su valor por defecto y cuándo se aplican.
+- **Shell e historial:** solo afectan a las pestañas y paneles que abras después del cambio.
+- **Errores:** si el archivo tiene alguno, la terminal lo muestra en un aviso y sigue funcionando con el resto.
 
 ## Limitaciones actuales
 
 - Solo hay una ventana; las pestañas no se pueden reordenar arrastrándolas.
 - Los bloques solo funcionan con zsh.
 - Mientras se escribe una tecla muerta no se ve nada hasta pulsar la segunda tecla.
-- No hay archivo de configuración.
+- El teclado no es configurable todavía: la Option izquierda siempre funciona como Meta.
 
 ## Solución de problemas
 
