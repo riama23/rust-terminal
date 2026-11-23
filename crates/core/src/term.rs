@@ -71,6 +71,9 @@ pub enum MouseMode {
 pub enum TermEvent {
     /// OSC 52: copiar al portapapeles.
     Clipboard(String),
+    /// OSC 52 con `?`: la aplicación quiere leer el portapapeles. La app
+    /// decide si responde (con [`Term::clipboard_response`]).
+    ClipboardRequest { selector: String },
     /// OSC 9, 777 o 99: notificación del sistema.
     Notification { title: Option<String>, body: String },
 }
@@ -212,6 +215,16 @@ impl Term {
     /// Eventos pendientes para la app (portapapeles, notificaciones).
     pub fn take_events(&mut self) -> Vec<TermEvent> {
         std::mem::take(&mut self.screen.events)
+    }
+
+    /// Respuesta a una lectura de portapapeles (OSC 52) con `text`.
+    pub fn clipboard_response(selector: &str, text: &str) -> Vec<u8> {
+        let selector = if selector.is_empty() { "c" } else { selector };
+        format!(
+            "\x1b]52;{selector};{}\x1b\\",
+            links::base64_encode(text.as_bytes())
+        )
+        .into_bytes()
     }
 
     /// DEC 2026 activo (y sin pasar del límite de tiempo): la app debe
@@ -1139,13 +1152,17 @@ impl Screen {
         }
     }
 
-    /// OSC 52 ; destino ; datos en base64. Solo se permite escribir.
+    /// OSC 52 ; destino ; datos en base64 (o `?` para leer).
     fn clipboard(&mut self, params: &[&[u8]]) {
         let Some(data) = params.get(2).and_then(|d| std::str::from_utf8(d).ok()) else {
             return;
         };
         if data == "?" {
-            log_unhandled(format_args!("OSC 52 lectura del portapapeles (denegada)"));
+            let selector = params
+                .get(1)
+                .map(|s| String::from_utf8_lossy(s).into_owned())
+                .unwrap_or_default();
+            self.events.push(TermEvent::ClipboardRequest { selector });
             return;
         }
         if let Some(text) = links::base64_decode(data).and_then(|b| String::from_utf8(b).ok()) {
@@ -2309,11 +2326,23 @@ mod tests {
     }
 
     #[test]
-    fn clipboard_write_only() {
+    fn clipboard_write_and_read_request() {
         let mut t = term(5, 1, "\x1b]52;c;aG9sYSDDsQ==\x07\x1b]52;c;?\x07");
-        assert_eq!(t.take_events(), [TermEvent::Clipboard("hola ñ".to_owned())]);
-        // La lectura no responde nada.
+        assert_eq!(
+            t.take_events(),
+            [
+                TermEvent::Clipboard("hola ñ".to_owned()),
+                TermEvent::ClipboardRequest {
+                    selector: "c".to_owned()
+                },
+            ]
+        );
+        // El núcleo no responde por su cuenta: decide la app.
         assert!(t.take_responses().is_empty());
+        assert_eq!(
+            Term::clipboard_response("c", "hola"),
+            b"\x1b]52;c;aG9sYQ==\x1b\\".to_vec()
+        );
     }
 
     #[test]

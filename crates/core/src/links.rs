@@ -58,6 +58,28 @@ pub fn find_urls(chars: &[char]) -> Vec<(usize, usize)> {
     out
 }
 
+/// Codifica en base64 estándar, con relleno.
+pub fn base64_encode(data: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = u32::from_be_bytes([0, b[0], b[1], b[2]]);
+        for k in 0..4 {
+            if k <= chunk.len() {
+                out.push(ALPHABET[(n >> (18 - 6 * k) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
 /// Decodifica base64 estándar (con o sin relleno). `None` si no es válido.
 pub fn base64_decode(input: &str) -> Option<Vec<u8>> {
     fn value(c: u8) -> Option<u32> {
@@ -115,6 +137,17 @@ mod tests {
         );
         assert!(urls("nohttps://x y https:// solo").is_empty());
         assert_eq!(urls("\"https://a.b/c\""), ["https://a.b/c"]);
+    }
+
+    #[test]
+    fn base64_round_trip() {
+        for s in ["", "a", "ho", "hol", "hola", "ñandú 🙂"] {
+            assert_eq!(
+                base64_decode(&base64_encode(s.as_bytes())).unwrap(),
+                s.as_bytes()
+            );
+        }
+        assert_eq!(base64_encode(b"hola"), "aG9sYQ==");
     }
 
     #[test]

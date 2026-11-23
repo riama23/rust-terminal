@@ -25,9 +25,9 @@ use objc2_foundation::{
     NSRange, NSRect, NSSize, NSString, NSUInteger,
 };
 use rust_terminal_core::selection;
-use rust_terminal_core::{MouseMode, Selection, SelectionKind, SelectionRange, TermEvent};
+use rust_terminal_core::{MouseMode, Selection, SelectionKind, SelectionRange, Term, TermEvent};
 
-use crate::config::Config;
+use crate::config::{ClipboardRead, Config};
 use crate::font::FontSpec;
 use crate::font::Metrics;
 use crate::input::{
@@ -427,6 +427,12 @@ fn open_url(url: &str) {
     if let Some(url) = objc2_foundation::NSURL::URLWithString(&NSString::from_str(url)) {
         NSWorkspace::sharedWorkspace().openURL(&url);
     }
+}
+
+fn read_pasteboard() -> Option<String> {
+    // SAFETY: portapapeles general, en el hilo principal.
+    unsafe { NSPasteboard::generalPasteboard().stringForType(NSPasteboardTypeString) }
+        .map(|s| s.to_string())
 }
 
 fn copy_to_pasteboard(text: &str) {
@@ -1242,6 +1248,20 @@ impl TerminalView {
         }
     }
 
+    /// `clipboard.read = "ask"`: pregunta si se permite leer el portapapeles.
+    fn ask_clipboard_read(&self, who: &str) -> bool {
+        let alert = NSAlert::new(self.mtm());
+        alert.setMessageText(&NSString::from_str(&format!(
+            "«{who}» quiere leer el portapapeles"
+        )));
+        alert.setInformativeText(&NSString::from_str(
+            "Un programa (quizá remoto, por ssh) pide el contenido que has copiado. Permítelo solo si confías en él.",
+        ));
+        alert.addButtonWithTitle(&NSString::from_str("Denegar"));
+        alert.addButtonWithTitle(&NSString::from_str("Permitir"));
+        alert.runModal() != NSAlertFirstButtonReturn
+    }
+
     /// Vuelve a leer la configuración (el archivo cambió). Con un error de
     /// sintaxis se conserva la anterior; con opciones no válidas, se ignoran
     /// solo esas. En ambos casos se muestra un aviso.
@@ -1286,6 +1306,17 @@ impl TerminalView {
                 match event {
                     AppEvent::Term(TermEvent::Clipboard(text)) if config.clipboard_write => {
                         copy_to_pasteboard(&text)
+                    }
+                    AppEvent::Term(TermEvent::ClipboardRequest { selector }) => {
+                        let allowed = match config.clipboard_read {
+                            ClipboardRead::Deny => false,
+                            ClipboardRead::Allow => true,
+                            ClipboardRead::Ask => self.ask_clipboard_read(&s.title()),
+                        };
+                        if allowed {
+                            let text = read_pasteboard().unwrap_or_default();
+                            s.write(&Term::clipboard_response(&selector, &text));
+                        }
                     }
                     AppEvent::Term(TermEvent::Notification { title, body }) if notify => {
                         notify::notify(&title.unwrap_or_else(|| s.title()), &body);
