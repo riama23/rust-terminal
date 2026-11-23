@@ -102,9 +102,35 @@ fn build_menu(app: &NSApplication, mtm: MainThreadMarker) {
 
     let edit_item = NSMenuItem::new(mtm);
     let edit_menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), ns_string!("Edición"));
+    edit_menu.addItem(&menu_item(mtm, "Copiar", sel!(copy:), "c"));
+    // "C" en mayúscula: Cmd+Shift+C.
+    edit_menu.addItem(&menu_item(
+        mtm,
+        "Copiar salida del último comando",
+        sel!(copyLastOutput:),
+        "C",
+    ));
     edit_menu.addItem(&menu_item(mtm, "Pegar", sel!(paste:), "v"));
     edit_item.setSubmenu(Some(&edit_menu));
     bar.addItem(&edit_item);
+
+    let view_item = NSMenuItem::new(mtm);
+    let view_menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), ns_string!("Ver"));
+    // U+F700 y U+F701: flechas arriba y abajo (NSUpArrowFunctionKey…).
+    view_menu.addItem(&menu_item(
+        mtm,
+        "Bloque anterior",
+        sel!(previousBlock:),
+        "\u{F700}",
+    ));
+    view_menu.addItem(&menu_item(
+        mtm,
+        "Bloque siguiente",
+        sel!(nextBlock:),
+        "\u{F701}",
+    ));
+    view_item.setSubmenu(Some(&view_menu));
+    bar.addItem(&view_item);
 
     app.setMainMenu(Some(&bar));
 }

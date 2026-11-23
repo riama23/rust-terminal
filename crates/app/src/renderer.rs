@@ -188,6 +188,15 @@ impl Atlas {
     }
 }
 
+/// Lo que se dibuja encima de las celdas, calculado con el bloqueo tomado.
+#[derive(Debug, Clone, Default)]
+pub struct Overlay {
+    /// Columnas seleccionadas `[inicio, fin]` por fila de la vista.
+    pub selection: Vec<(usize, usize, usize)>,
+    /// Marcas de bloque: fila de la vista del prompt y si el comando falló.
+    pub marks: Vec<(usize, bool)>,
+}
+
 /// Lo que el renderizador necesita saber del layout de la vista.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Layout {
@@ -291,8 +300,15 @@ impl Renderer {
     }
 
     /// Construye un frame y lo presenta en el siguiente drawable del layer.
-    pub fn draw(&mut self, layer: &CAMetalLayer, layout: Layout, cursor: Cursor, modes: Modes) {
-        self.build_quads(layout, cursor, modes);
+    pub fn draw(
+        &mut self,
+        layer: &CAMetalLayer,
+        layout: Layout,
+        cursor: Cursor,
+        modes: Modes,
+        overlay: &Overlay,
+    ) {
+        self.build_quads(layout, cursor, modes, overlay);
         let Some(drawable) = layer.nextDrawable() else {
             return;
         };
@@ -361,15 +377,35 @@ impl Renderer {
         Some(command_buffer)
     }
 
-    fn build_quads(&mut self, layout: Layout, cursor: Cursor, modes: Modes) {
+    fn build_quads(&mut self, layout: Layout, cursor: Cursor, modes: Modes, overlay: &Overlay) {
         self.quads.clear();
         let m = self.fonts.metrics;
         let (cw, ch) = (m.cell_w as f32, m.cell_h as f32);
         let pad = layout.pad_px as f32;
         let mut glyphs: Vec<Quad> = Vec::new();
 
+        // Marcas de bloque en el margen izquierdo.
+        let mark_w = (pad * 0.3).round().max(2.0);
+        for &(r, failed) in overlay.marks.iter() {
+            let color = if failed {
+                palette::MARK_FAILED
+            } else {
+                palette::MARK_OK
+            };
+            let y = pad + r as f32 * ch;
+            self.quads.push(fill(
+                [(pad - mark_w) / 3.0, y, mark_w, ch],
+                palette::to_rgba(color, 1.0),
+            ));
+        }
+
         for (r, row) in self.rows.iter().enumerate() {
             let y = pad + r as f32 * ch;
+            let selected = overlay
+                .selection
+                .iter()
+                .find(|(sr, _, _)| *sr == r)
+                .map(|&(_, a, b)| (a, b));
             for (c, cell) in row.iter().enumerate() {
                 if cell.flags.contains(Flags::WIDE_SPACER) {
                     continue;
@@ -391,6 +427,8 @@ impl Renderer {
                 if is_cursor {
                     fg = bg;
                     bg = palette::CURSOR;
+                } else if selected.is_some_and(|(a, b)| c >= a && c <= b) {
+                    bg = palette::SELECTION;
                 }
                 if bg != palette::DEFAULT_BG {
                     self.quads
@@ -456,6 +494,14 @@ mod tests {
 
     /// Pinta `term` en una textura fuera de pantalla y devuelve los píxeles BGRA.
     fn render(term: &Term, scale: f64) -> (Layout, crate::font::Metrics, Vec<u8>) {
+        render_with(term, scale, &Overlay::default())
+    }
+
+    fn render_with(
+        term: &Term,
+        scale: f64,
+        overlay: &Overlay,
+    ) -> (Layout, crate::font::Metrics, Vec<u8>) {
         let device = create_device();
         let mut r = Renderer::new(device.clone(), MTLPixelFormat::BGRA8Unorm, scale);
         let m = r.fonts.metrics;
@@ -484,7 +530,7 @@ mod tests {
         desc.setStorageMode(MTLStorageMode::Shared);
         let texture = device.newTextureWithDescriptor(&desc).unwrap();
 
-        r.build_quads(layout, term.cursor(), term.modes());
+        r.build_quads(layout, term.cursor(), term.modes(), overlay);
         let cb = r.encode(&texture, layout).unwrap();
         cb.commit();
         cb.waitUntilCompleted();
@@ -587,6 +633,40 @@ mod tests {
     }
 
     #[test]
+    fn selection_and_block_marks() {
+        let mut term = Term::new(4, 2);
+        term.advance(b"\x1b[?25l");
+        let overlay = Overlay {
+            selection: vec![(0, 1, 2)],
+            marks: vec![(1, true)],
+        };
+        let (layout, m, pixels) = render_with(&term, 2.0, &overlay);
+        let sel = bgra(palette::SELECTION);
+        let bg = bgra(palette::DEFAULT_BG);
+        assert!(
+            cell_pixels(layout, m, &pixels, 0, 1)
+                .iter()
+                .all(|p| *p == sel)
+        );
+        assert!(
+            cell_pixels(layout, m, &pixels, 0, 3)
+                .iter()
+                .all(|p| *p == bg)
+        );
+        // La marca roja está en el margen izquierdo de la fila 1.
+        let stride = layout.width_px as usize * 4;
+        let y = (layout.pad_px + m.cell_h + m.cell_h / 2) as usize;
+        let red = bgra(palette::MARK_FAILED);
+        let margin: Vec<[u8; 4]> = (0..layout.pad_px as usize)
+            .map(|x| {
+                let i = y * stride + x * 4;
+                [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+            })
+            .collect();
+        assert!(margin.contains(&red), "no hay marca roja en el margen");
+    }
+
+    #[test]
     fn hidden_cursor_is_not_drawn() {
         let mut term = Term::new(3, 1);
         term.advance(b"\x1b[?25l");
@@ -623,7 +703,11 @@ mod tests {
             )
             .as_bytes(),
         );
-        let (layout, _m, pixels) = render(&term, 2.0);
+        let overlay = Overlay {
+            selection: vec![(1, 0, 6), (2, 10, 20)],
+            marks: vec![(0, false), (8, true)],
+        };
+        let (layout, _m, pixels) = render_with(&term, 2.0, &overlay);
         let (w, h) = (layout.width_px as usize, layout.height_px as usize);
         let mut bmp = Vec::with_capacity(54 + w * h * 4);
         let size = (54 + w * h * 4) as u32;

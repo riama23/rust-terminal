@@ -8,6 +8,11 @@ pub type Rgba = [f32; 4];
 pub const DEFAULT_FG: [u8; 3] = [0xd8, 0xd8, 0xd8];
 pub const DEFAULT_BG: [u8; 3] = [0x1c, 0x1c, 0x1e];
 pub const CURSOR: [u8; 3] = [0xd8, 0xd8, 0xd8];
+pub const SELECTION: [u8; 3] = [0x26, 0x4f, 0x78];
+/// Marca de bloque en el margen: comando terminado bien (o aún en curso).
+pub const MARK_OK: [u8; 3] = [0x5a, 0x5a, 0x60];
+/// Marca de bloque en el margen: comando con código de salida distinto de 0.
+pub const MARK_FAILED: [u8; 3] = [0xe0, 0x4f, 0x4f];
 
 /// Los 16 colores ANSI (esquema de xterm, algo suavizado).
 const ANSI: [[u8; 3]; 16] = [

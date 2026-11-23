@@ -21,7 +21,28 @@ use objc2_foundation::{
 use objc2_quartz_core::{CADisplayLink, CAMetalLayer};
 use rust_terminal_core::{PtyReader, PtyWriter, Term};
 
-use crate::renderer::{Layout, Renderer};
+use crate::renderer::{Layout, Overlay, Renderer};
+
+/// Selección y marcas de bloque en coordenadas de la vista.
+fn overlay(term: &Term, rows: usize, cols: usize) -> Overlay {
+    let mut overlay = Overlay::default();
+    if let Some(range) = term.selection_range() {
+        for row in 0..rows {
+            if let Some((a, b)) = range.cols_on(term.visible_line(row), cols) {
+                overlay.selection.push((row, a, b));
+            }
+        }
+    }
+    let (top, bottom) = (term.visible_line(0), term.visible_line(rows - 1));
+    for block in term.blocks() {
+        let line = block.prompt.line;
+        if (top..=bottom).contains(&line) {
+            let failed = block.exit_code.is_some_and(|c| c != 0);
+            overlay.marks.push(((line - top) as usize, failed));
+        }
+    }
+    overlay
+}
 
 /// `CAMetalLayer` compartido entre el hilo principal (tamaño y escala) y el
 /// de render (drawables). Ambos lo usan con el mutex tomado, como en el
@@ -176,7 +197,7 @@ impl RenderTarget {
         });
         renderer.set_scale(layout.scale);
 
-        let (cursor, modes) = {
+        let (cursor, modes, overlay) = {
             let mut term = shared.term.lock().unwrap();
             let grid = term.grid();
             let (cols, rows) = (grid.cols(), grid.rows());
@@ -195,9 +216,9 @@ impl RenderTarget {
             if cursor.row >= rows {
                 modes.cursor_visible = false;
             }
-            (cursor, modes)
+            (cursor, modes, overlay(&term, rows, cols))
         };
-        renderer.draw(&shared.layer.lock(), layout, cursor, modes);
+        renderer.draw(&shared.layer.lock(), layout, cursor, modes, &overlay);
         shared.frames.fetch_add(1, SeqCst);
     }
 }
