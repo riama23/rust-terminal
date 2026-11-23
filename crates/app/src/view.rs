@@ -27,7 +27,7 @@ use rust_terminal_core::selection;
 use rust_terminal_core::{Selection, SelectionKind};
 
 use crate::font::{self, Metrics};
-use crate::input::{self, Mods};
+use crate::input::{self, KeyEvent, KeyKind, KittyKey, KittyMods, Mods, kitty};
 use crate::renderer::{Layout, TabBar, TabItem};
 use crate::session::Session;
 use crate::window::{PaneSlot, Waker, WindowFrame, WindowShared};
@@ -92,7 +92,29 @@ define_class!(
 
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
-            self.handle_key(event);
+            let kind = if event.isARepeat() {
+                KeyKind::Repeat
+            } else {
+                KeyKind::Press
+            };
+            self.handle_key(event, kind);
+        }
+
+        /// Soltar una tecla: solo importa con el nivel 2 del protocolo de kitty.
+        #[unsafe(method(keyUp:))]
+        fn key_up(&self, event: &NSEvent) {
+            let wants = self
+                .focused_session()
+                .is_some_and(|s| s.term.lock().unwrap().modes().kitty_flags & kitty::EVENT_TYPES != 0);
+            if wants {
+                self.handle_key(event, KeyKind::Release);
+            }
+        }
+
+        /// Teclas modificadoras solas: solo con "todas las teclas como escapes" de kitty.
+        #[unsafe(method(flagsChanged:))]
+        fn flags_changed(&self, event: &NSEvent) {
+            self.handle_modifier_key(event);
         }
 
         #[unsafe(method(setFrameSize:))]
@@ -982,45 +1004,167 @@ impl TerminalView {
         window.convertRectToScreen(in_window)
     }
 
-    fn handle_key(&self, event: &NSEvent) {
+    fn handle_key(&self, event: &NSEvent, kind: KeyKind) {
         let flags = event.modifierFlags();
+        let raw = flags.0;
+        // Bits de dispositivo: Option izquierda (0x20) y derecha (0x40).
+        // La izquierda actúa como Meta; la derecha compone (@, #…).
+        let meta = raw & DEVICE_LEFT_ALT != 0 && raw & DEVICE_RIGHT_ALT == 0;
         let mods = Mods {
             shift: flags.contains(NSEventModifierFlags::Shift),
-            alt: flags.contains(NSEventModifierFlags::Option),
+            alt: meta,
             ctrl: flags.contains(NSEventModifierFlags::Control),
         };
         let cmd = flags.contains(NSEventModifierFlags::Command);
         let composing = !self.ivars().marked.borrow().is_empty();
+        let Some(session) = self.focused_session() else {
+            return;
+        };
+        let modes = session.term.lock().unwrap().modes();
+        if cmd && kind != KeyKind::Release {
+            // Los atajos con Cmd los resuelve el menú; el resto se ignora.
+            return;
+        }
+        let special = input::key_from_keycode(event.keyCode());
+        // Carácter de la tecla sin modificadores (en el layout actual) y con Shift.
+        let base = event
+            .charactersByApplyingModifiers(NSEventModifierFlags::empty())
+            .and_then(|s| s.to_string().chars().next());
+        let ignoring = event
+            .charactersIgnoringModifiers()
+            .map(|s| s.to_string())
+            .unwrap_or_default();
 
-        if !composing && !cmd {
-            if let Some(key) = input::key_from_keycode(event.keyCode()) {
-                let app_cursor = self
-                    .focused_session()
-                    .is_some_and(|s| s.term.lock().unwrap().modes().app_cursor);
-                self.send_input(&input::encode_key(key, mods, app_cursor));
-                return;
-            }
-            if mods.ctrl {
-                let byte = event
-                    .charactersIgnoringModifiers()
-                    .and_then(|s| s.to_string().chars().next())
-                    .and_then(input::ctrl_byte);
-                if let Some(byte) = byte {
-                    self.send_input(&[byte]);
+        if modes.kitty_flags != 0 && !composing {
+            let key = match (special, base) {
+                (Some(k), _) => Some(KittyKey::Special(k)),
+                (None, Some(c)) if !c.is_control() => {
+                    Some(KittyKey::Char(c.to_lowercase().next().unwrap_or(c)))
+                }
+                _ => None,
+            };
+            if let Some(key) = key {
+                let text = if mods.ctrl || meta {
+                    None
+                } else {
+                    event.characters().map(|s| s.to_string())
+                };
+                let ev = KeyEvent {
+                    key,
+                    mods: KittyMods {
+                        shift: mods.shift,
+                        alt: meta,
+                        ctrl: mods.ctrl,
+                        super_: cmd,
+                        caps_lock: flags.contains(NSEventModifierFlags::CapsLock),
+                    },
+                    kind,
+                    shifted: ignoring.chars().next(),
+                    text,
+                };
+                if let Some(bytes) = input::encode_kitty(&ev, modes.kitty_flags) {
+                    if !bytes.is_empty() {
+                        if kind == KeyKind::Release {
+                            session.write(&bytes);
+                        } else {
+                            self.send_input(&bytes);
+                        }
+                    }
                     return;
                 }
             }
         }
-        if cmd {
-            // Los atajos con Cmd los resuelve el menú; el resto se ignora.
+        if kind == KeyKind::Release {
             return;
         }
-        // Texto normal, Option que compone y teclas muertas: los resuelve el
-        // sistema de entrada y llegan por `insertText:` o `setMarkedText:`.
+
+        if !composing {
+            if let Some(key) = special {
+                self.send_input(&input::encode_key(key, mods, modes.app_cursor));
+                return;
+            }
+            let c = ignoring.chars().next();
+            if let Some(c) = c
+                && let Some(bytes) =
+                    input::encode_modify_other_keys(c, mods, modes.modify_other_keys)
+            {
+                self.send_input(&bytes);
+                return;
+            }
+            if mods.ctrl
+                && let Some(byte) = c.and_then(input::ctrl_byte)
+            {
+                if meta {
+                    self.send_input(&[0x1b, byte]);
+                } else {
+                    self.send_input(&[byte]);
+                }
+                return;
+            }
+            if meta && !ignoring.is_empty() {
+                self.send_input(&input::encode_meta(&ignoring));
+                return;
+            }
+        }
+        // Texto normal, Option derecha que compone y teclas muertas: los
+        // resuelve el sistema de entrada y llegan por `insertText:` o `setMarkedText:`.
         let events = NSArray::from_slice(&[event]);
         self.interpretKeyEvents(&events);
     }
+
+    /// Pulsar o soltar una tecla modificadora sola (protocolo de kitty).
+    fn handle_modifier_key(&self, event: &NSEvent) {
+        let Some(session) = self.focused_session() else {
+            return;
+        };
+        let modes = session.term.lock().unwrap().modes();
+        if modes.kitty_flags & kitty::ALL_AS_ESCAPES == 0 {
+            return;
+        }
+        use input::modifier_codes as mc;
+        let raw = event.modifierFlags().0;
+        let (code, bit) = match event.keyCode() {
+            56 => (mc::LEFT_SHIFT, 0x02),
+            60 => (mc::RIGHT_SHIFT, 0x04),
+            59 => (mc::LEFT_CONTROL, 0x01),
+            62 => (mc::RIGHT_CONTROL, 0x2000),
+            58 => (mc::LEFT_ALT, DEVICE_LEFT_ALT),
+            61 => (mc::RIGHT_ALT, DEVICE_RIGHT_ALT),
+            55 => (mc::LEFT_SUPER, 0x08),
+            54 => (mc::RIGHT_SUPER, 0x10),
+            57 => (mc::CAPS_LOCK, NSEventModifierFlags::CapsLock.0),
+            _ => return,
+        };
+        let flags = event.modifierFlags();
+        let kind = if raw & bit != 0 {
+            KeyKind::Press
+        } else {
+            KeyKind::Release
+        };
+        let ev = KeyEvent {
+            key: KittyKey::Modifier(code),
+            mods: KittyMods {
+                shift: flags.contains(NSEventModifierFlags::Shift),
+                alt: flags.contains(NSEventModifierFlags::Option),
+                ctrl: flags.contains(NSEventModifierFlags::Control),
+                super_: flags.contains(NSEventModifierFlags::Command),
+                caps_lock: flags.contains(NSEventModifierFlags::CapsLock),
+            },
+            kind,
+            shifted: None,
+            text: None,
+        };
+        if let Some(bytes) = input::encode_kitty(&ev, modes.kitty_flags)
+            && !bytes.is_empty()
+        {
+            session.write(&bytes);
+        }
+    }
 }
+
+/// Bits de dispositivo de `modifierFlags` (NX_DEVICELALTKEYMASK…).
+const DEVICE_LEFT_ALT: usize = 0x20;
+const DEVICE_RIGHT_ALT: usize = 0x40;
 
 /// Columnas y filas que caben en un panel.
 fn pane_dims(r: Rect, g: &Geometry) -> (usize, usize) {
