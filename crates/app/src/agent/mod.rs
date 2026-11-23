@@ -6,3 +6,7 @@
 
 pub mod broker;
 pub mod http;
+pub mod launch;
+
+#[cfg(test)]
+mod e2e;
