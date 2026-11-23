@@ -66,6 +66,8 @@ pub struct ViewIvars {
     config: RefCell<Config>,
     /// Entorno base de las shells (locale); la integración se añade por sesión.
     base_env: Vec<(String, String)>,
+    /// `-e comando …`: lo ejecuta el primer panel en lugar de la shell.
+    initial_command: RefCell<Option<Vec<String>>>,
     workspace: RefCell<Option<Workspace>>,
     sessions: RefCell<HashMap<PaneId, Arc<Session>>>,
     next_id: Cell<PaneId>,
@@ -477,12 +479,14 @@ impl TerminalView {
         window: Arc<WindowShared>,
         config: Config,
         base_env: Vec<(String, String)>,
+        initial_command: Option<Vec<String>>,
     ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(ViewIvars {
             window,
             waker: OnceCell::new(),
             config: RefCell::new(config),
             base_env,
+            initial_command: RefCell::new(initial_command),
             workspace: RefCell::new(None),
             sessions: RefCell::new(HashMap::new()),
             next_id: Cell::new(1),
@@ -600,14 +604,24 @@ impl TerminalView {
         };
         let ivars = self.ivars();
         let config = ivars.config.borrow().clone();
-        let shell = config.shell();
         let mut env = ivars.base_env.clone();
-        if config.shell_integration {
-            env.extend(crate::shell::integration_env(&shell));
-        }
+        // El comando de `-e` (solo para el primer panel) o la shell.
+        let (shell, args) = match ivars.initial_command.borrow_mut().take() {
+            Some(mut cmd) if !cmd.is_empty() => {
+                let program = cmd.remove(0);
+                (program, cmd)
+            }
+            _ => {
+                let shell = config.shell();
+                if config.shell_integration {
+                    env.extend(crate::shell::integration_env(&shell));
+                }
+                (shell, config.shell_args.clone())
+            }
+        };
         let opts = SpawnOptions {
             shell: &shell,
-            args: &config.shell_args,
+            args: &args,
             env: &env,
             cwd: cwd.as_deref(),
             history_limit: config.scrollback_lines,

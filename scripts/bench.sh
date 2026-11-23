@@ -20,7 +20,8 @@ case "${1:-}" in
 core)
     cargo run -q -p rust-terminal-core --release --bin bench-core | tee "$OUT/core-$STAMP.txt"
     ;;
-vtebench)
+build-vtebench)
+    # Solo clona (fijado al commit) y compila vtebench; imprime su ruta.
     DIR="target/vtebench"
     if [[ ! -d "$DIR/.git" ]]; then
         git clone --quiet "$VTEBENCH_REPO" "$DIR"
@@ -28,6 +29,11 @@ vtebench)
     git -C "$DIR" fetch --quiet origin "$VTEBENCH_COMMIT" 2>/dev/null || true
     git -C "$DIR" checkout --quiet "$VTEBENCH_COMMIT"
     cargo build -q --release --manifest-path "$DIR/Cargo.toml"
+    echo "$PWD/$DIR/target/release/vtebench"
+    ;;
+vtebench)
+    DIR="target/vtebench"
+    "$0" build-vtebench >/dev/null
     "$DIR/target/release/vtebench" -b "$DIR/benchmarks" --dat "$OUT/vtebench-$STAMP.dat"
     echo "Resultados: $OUT/vtebench-$STAMP.dat"
     ;;

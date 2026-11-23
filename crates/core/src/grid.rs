@@ -194,7 +194,11 @@ pub struct Point {
 #[derive(Debug, Clone)]
 pub struct Grid {
     cols: usize,
-    rows: Vec<Row>,
+    /// Filas de la pantalla. Van en caja para que desplazar una región mueva
+    /// punteros de 8 bytes y no estructuras `Row` enteras (bench-core,
+    /// `y\r\n` en región: de 66 a 91 MiB/s).
+    #[allow(clippy::vec_box)]
+    rows: Vec<Box<Row>>,
     dirty: Vec<bool>,
     history: VecDeque<Row>,
     history_limit: usize,
@@ -216,7 +220,9 @@ impl Grid {
         assert!(cols > 0 && rows > 0, "la cuadrícula no puede estar vacía");
         Grid {
             cols,
-            rows: vec![Row::blank(cols, Cell::default()); rows],
+            rows: (0..rows)
+                .map(|_| Box::new(Row::blank(cols, Cell::default())))
+                .collect(),
             dirty: vec![true; rows],
             history: VecDeque::new(),
             history_limit,
@@ -313,7 +319,7 @@ impl Grid {
         if i < self.history.len() {
             self.history.get(i)
         } else {
-            self.rows.get(i - self.history.len())
+            self.rows.get(i - self.history.len()).map(|r| &**r)
         }
     }
 
@@ -470,7 +476,7 @@ impl Grid {
             }
         }
         self.rows
-            .resize_with(rows, || Row::blank(cols, Cell::default()));
+            .resize_with(rows, || Box::new(Row::blank(cols, Cell::default())));
         self.cols = cols;
         self.dirty = vec![true; rows];
     }
@@ -487,7 +493,7 @@ impl Grid {
         // 1. Todas las filas, sin las vacías del final que estén por debajo del cursor.
         let mut all: Vec<Row> = self.history.drain(..).collect();
         let old_first = self.first_line;
-        all.append(&mut self.rows);
+        all.extend(self.rows.drain(..).map(|r| *r));
         let cursor_idx = cursor_line.map(|l| (l - old_first) as usize);
         while all.len() > cursor_idx.map_or(0, |c| c + 1)
             && all
@@ -650,7 +656,7 @@ impl Grid {
         }
 
         self.history = history.into();
-        self.rows = screen;
+        self.rows = screen.into_iter().map(Box::new).collect();
         self.cols = cols;
         self.first_line = new_first;
         self.dirty = vec![true; rows];

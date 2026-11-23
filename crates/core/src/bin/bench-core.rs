@@ -55,6 +55,15 @@ fn scroll_region() -> Vec<u8> {
     repeat_until_target(&chunk)
 }
 
+/// Como los benchmarks de región de vtebench: `y` y salto de línea, en la
+/// pantalla alternativa, dentro de una región de media pantalla. La PTY
+/// convierte `\n` en `\r\n` (onlcr), así que eso es lo que llega.
+fn region_newlines() -> Vec<u8> {
+    let mut out = b"\x1b[?1049h\x1b[1;25r".to_vec();
+    out.extend(repeat_until_target("y\r\n"));
+    out
+}
+
 fn unicode() -> Vec<u8> {
     let line = "Acentos áéíóú ñ — CJK 日本語の文章 — emoji 🙂🚀✨ — box ┌─┬─┐│ │\r\n";
     repeat_until_target(&line.repeat(32))
@@ -71,6 +80,12 @@ fn cursor_motion() -> Vec<u8> {
 }
 
 fn bench(name: &str, input: &[u8]) {
+    // `bench-core <texto>`: solo los casos cuyo nombre lo contiene.
+    if let Some(filter) = std::env::args().nth(1)
+        && !name.contains(&filter)
+    {
+        return;
+    }
     let mut best = Duration::MAX;
     for _ in 0..RUNS {
         let mut term = Term::new(200, 50);
@@ -127,6 +142,9 @@ fn main() {
     bench("SGR denso", &dense_sgr());
     bench("scroll región", &scroll_region());
     bench("unicode", &unicode());
+    bench("y\\r\\n en región", &region_newlines());
     bench("movimientos", &cursor_motion());
-    bench_reflow();
+    if std::env::args().nth(1).is_none() {
+        bench_reflow();
+    }
 }

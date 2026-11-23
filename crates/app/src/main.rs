@@ -297,6 +297,15 @@ fn utf8_locale_env() -> Vec<(String, String)> {
     vec![("LANG".to_owned(), lang)]
 }
 
+/// `-e programa [argumentos…]` (como en otras terminales): el primer panel
+/// ejecuta ese programa en lugar de la shell y se cierra cuando termina.
+fn initial_command() -> Option<Vec<String>> {
+    let args: Vec<String> = std::env::args().collect();
+    let i = args.iter().position(|a| a == "-e")?;
+    let cmd = args[i + 1..].to_vec();
+    (!cmd.is_empty()).then_some(cmd)
+}
+
 /// Crea la ventana con su vista, arranca el render y la primera sesión.
 fn open_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
     // Tamaño inicial a partir de las métricas de la pantalla principal
@@ -352,6 +361,7 @@ fn open_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
         shared.clone(),
         config,
         utf8_locale_env(),
+        initial_command(),
     );
     view.setLayer(Some(&layer));
     view.setWantsLayer(true);
