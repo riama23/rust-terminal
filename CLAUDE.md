@@ -51,6 +51,7 @@ El diseño de abajo está acordado con el usuario; los temas de "Abierto" no se 
   - el criterio de terminada: sustituir a Warp durante una semana (`docs/semana-de-prueba.md`);
   - medir la latencia con Typometer (`scripts/latency.sh`);
   - cerrar la distancia con Ghostty en throughput (`docs/rendimiento.md`).
+- **Después de la v1:** el roadmap de versiones v1.1–v2 (agentes, broker, review, bloques visuales, ajustes) está en `docs/roadmap.md`, derivado del spec de producto. Ese alcance no forma parte de la v1; las decisiones ya cerradas están en su anexo.
 - **Pospuesto:** comparación con Ghostty y Alacritty. Hay que instalarlos, y Java para Typometer.
 
 **Modelo de hilos (`session.rs` y `window.rs`):**
