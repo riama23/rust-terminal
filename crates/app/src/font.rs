@@ -5,7 +5,7 @@
 
 use std::ptr::NonNull;
 
-use objc2_core_foundation::{CFRange, CFRetained, CFString, CGFloat, CGPoint, CGSize};
+use objc2_core_foundation::{CFRange, CFRetained, CFString, CGFloat, CGPoint};
 use objc2_core_graphics::{
     CGBitmapContextCreate, CGColorSpace, CGContext, CGImageAlphaInfo, CGImageByteOrderInfo,
 };
@@ -181,13 +181,29 @@ impl Fonts {
 
     /// Rasteriza `ch` en un recuadro de `cells` celdas de ancho.
     pub fn rasterize(&self, ch: char, style: Style, cells: u32) -> Raster {
-        let (font, glyph) = self.lookup(ch, style);
+        self.rasterize_text(ch.encode_utf8(&mut [0; 4]), style, cells)
+    }
+
+    /// Rasteriza un grupo de caracteres (base + combinantes, o uno solo) en
+    /// un recuadro de `cells` celdas. Cada carácter usa su fuente (o la de
+    /// respaldo); las marcas combinantes se centran sobre la base.
+    pub fn rasterize_text(&self, text: &str, style: Style, cells: u32) -> Raster {
         let m = self.metrics;
         let width = m.cell_w * cells;
         let height = m.cell_h;
+        let parts: Vec<(CFRetained<CTFont>, u16)> = text
+            .chars()
+            .enumerate()
+            .map(|(i, ch)| (i, self.lookup(ch, style)))
+            // Sin glifo propio (ZWJ, selectores de variante…): no se dibuja,
+            // salvo el primero, que muestra el glifo de "no disponible".
+            .filter(|(i, (_, g))| *i == 0 || *g != 0)
+            .map(|(_, p)| p)
+            .collect();
         // SAFETY: lectura de rasgos de una fuente válida.
-        let color =
-            unsafe { font.symbolic_traits() }.contains(CTFontSymbolicTraits::TraitColorGlyphs);
+        let color = parts.first().is_some_and(|(font, _)| {
+            unsafe { font.symbolic_traits() }.contains(CTFontSymbolicTraits::TraitColorGlyphs)
+        });
 
         let stride = width as usize * 4;
         let mut pixels = vec![0u8; stride * height as usize];
@@ -210,37 +226,64 @@ impl Fonts {
         CGContext::set_should_smooth_fonts(Some(&ctx), false);
         CGContext::set_rgb_fill_color(Some(&ctx), 1.0, 1.0, 1.0, 1.0);
 
-        // Los emoji se escalan para que quepan en el recuadro.
-        let mut glyphs = [glyph];
-        let origin_y = (m.cell_h - m.baseline) as CGFloat;
-        let mut positions = [CGPoint::new(0.0, origin_y)];
-        if color {
-            let mut advance = CGSize::new(0.0, 0.0);
-            // SAFETY: un glifo y un avance.
+        let advance_of = |font: &CTFont, glyph: u16| -> CGFloat {
+            let mut glyphs = [glyph];
+            // SAFETY: un glifo; el avance total es el valor de retorno.
             unsafe {
                 font.advances_for_glyphs(
                     CTFontOrientation::Horizontal,
                     NonNull::new_unchecked(glyphs.as_mut_ptr()),
-                    &mut advance,
+                    std::ptr::null_mut(),
                     1,
-                );
+                )
             }
-            let scale = if advance.width > width as CGFloat {
-                width as CGFloat / advance.width
+        };
+        let mut origin_y = (m.cell_h - m.baseline) as CGFloat;
+        // Los emoji se escalan para que quepan en el recuadro.
+        if color && let Some((font, glyph)) = parts.first() {
+            let advance = advance_of(font, *glyph);
+            let scale = if advance > width as CGFloat {
+                width as CGFloat / advance
             } else {
                 1.0
             };
             CGContext::scale_ctm(Some(&ctx), scale, scale);
-            positions[0].y /= scale;
+            origin_y /= scale;
         }
-        // SAFETY: arrays de un elemento y contexto válido.
-        unsafe {
-            font.draw_glyphs(
-                NonNull::new_unchecked(glyphs.as_mut_ptr()),
-                NonNull::new_unchecked(positions.as_mut_ptr()),
-                1,
-                &ctx,
-            );
+        let bounds_of = |font: &CTFont, glyph: u16| -> objc2_core_foundation::CGRect {
+            let mut glyphs = [glyph];
+            // SAFETY: un glifo; la caja total es el valor de retorno.
+            unsafe {
+                font.bounding_rects_for_glyphs(
+                    CTFontOrientation::Horizontal,
+                    NonNull::new_unchecked(glyphs.as_mut_ptr()),
+                    std::ptr::null_mut(),
+                    1,
+                )
+            }
+        };
+        // La base va al principio; cada marca (los demás caracteres del grupo,
+        // todos de ancho 0) se centra sobre el avance de la base, según su caja
+        // real: así no depende de cómo diseñe cada fuente sus marcas.
+        let base_advance = parts.first().map_or(0.0, |(f, g)| advance_of(f, *g));
+        for (i, (font, glyph)) in parts.iter().enumerate() {
+            let x = if i == 0 {
+                0.0
+            } else {
+                let b = bounds_of(font, *glyph);
+                (base_advance - b.size.width) / 2.0 - b.origin.x
+            };
+            let mut glyphs = [*glyph];
+            let mut positions = [CGPoint::new(x, origin_y)];
+            // SAFETY: arrays de un elemento y contexto válido.
+            unsafe {
+                font.draw_glyphs(
+                    NonNull::new_unchecked(glyphs.as_mut_ptr()),
+                    NonNull::new_unchecked(positions.as_mut_ptr()),
+                    1,
+                    &ctx,
+                );
+            }
         }
         drop(ctx);
         Raster {

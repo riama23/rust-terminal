@@ -105,6 +105,7 @@ struct Atlas {
     cursor_x: u32,
     cursor_y: u32,
     slots: HashMap<(char, Style), Option<Slot>>,
+    cluster_slots: HashMap<(String, Style), Option<Slot>>,
 }
 
 impl Atlas {
@@ -127,6 +128,7 @@ impl Atlas {
             cursor_x: 0,
             cursor_y: 0,
             slots: HashMap::new(),
+            cluster_slots: HashMap::new(),
         }
     }
 
@@ -134,58 +136,72 @@ impl Atlas {
         self.cursor_x = 0;
         self.cursor_y = 0;
         self.slots.clear();
+        self.cluster_slots.clear();
     }
 
     fn get(&mut self, fonts: &Fonts, ch: char, style: Style, cells: u32) -> Option<Slot> {
         if let Some(slot) = self.slots.get(&(ch, style)) {
             return *slot;
         }
-        let raster = fonts.rasterize(ch, style, cells);
-        let slot = if raster.pixels.as_chunks::<4>().0.iter().all(|p| p[3] == 0) {
-            None
-        } else {
-            if self.cursor_x + raster.width > ATLAS_SIZE {
-                self.cursor_x = 0;
-                self.cursor_y += raster.height;
-            }
-            if self.cursor_y + raster.height > ATLAS_SIZE {
-                // Atlas lleno: se vacía y se vuelve a llenar con lo que se use.
-                self.clear();
-            }
-            let (x, y) = (self.cursor_x, self.cursor_y);
-            self.cursor_x += raster.width;
-            let region = MTLRegion {
-                origin: MTLOrigin {
-                    x: x as NSUInteger,
-                    y: y as NSUInteger,
-                    z: 0,
-                },
-                size: MTLSize {
-                    width: raster.width as NSUInteger,
-                    height: raster.height as NSUInteger,
-                    depth: 1,
-                },
-            };
-            // SAFETY: el buffer tiene `width * height * 4` bytes y la región cabe en la textura.
-            unsafe {
-                self.texture
-                    .replaceRegion_mipmapLevel_withBytes_bytesPerRow(
-                        region,
-                        0,
-                        NonNull::new_unchecked(raster.pixels.as_ptr() as *mut _),
-                        (raster.width * 4) as NSUInteger,
-                    );
-            }
-            Some(Slot {
-                x,
-                y,
-                w: raster.width,
-                h: raster.height,
-                color: raster.color,
-            })
-        };
+        let slot = self.upload(fonts.rasterize(ch, style, cells));
         self.slots.insert((ch, style), slot);
         slot
+    }
+
+    /// Como [`Atlas::get`], para un grupo de caracteres (base + combinantes).
+    fn get_text(&mut self, fonts: &Fonts, text: &str, style: Style, cells: u32) -> Option<Slot> {
+        let key = (text.to_owned(), style);
+        if let Some(slot) = self.cluster_slots.get(&key) {
+            return *slot;
+        }
+        let slot = self.upload(fonts.rasterize_text(text, style, cells));
+        self.cluster_slots.insert(key, slot);
+        slot
+    }
+
+    fn upload(&mut self, raster: crate::font::Raster) -> Option<Slot> {
+        if raster.pixels.as_chunks::<4>().0.iter().all(|p| p[3] == 0) {
+            return None;
+        }
+        if self.cursor_x + raster.width > ATLAS_SIZE {
+            self.cursor_x = 0;
+            self.cursor_y += raster.height;
+        }
+        if self.cursor_y + raster.height > ATLAS_SIZE {
+            // Atlas lleno: se vacía y se vuelve a llenar con lo que se use.
+            self.clear();
+        }
+        let (x, y) = (self.cursor_x, self.cursor_y);
+        self.cursor_x += raster.width;
+        let region = MTLRegion {
+            origin: MTLOrigin {
+                x: x as NSUInteger,
+                y: y as NSUInteger,
+                z: 0,
+            },
+            size: MTLSize {
+                width: raster.width as NSUInteger,
+                height: raster.height as NSUInteger,
+                depth: 1,
+            },
+        };
+        // SAFETY: el buffer tiene `width * height * 4` bytes y la región cabe en la textura.
+        unsafe {
+            self.texture
+                .replaceRegion_mipmapLevel_withBytes_bytesPerRow(
+                    region,
+                    0,
+                    NonNull::new_unchecked(raster.pixels.as_ptr() as *mut _),
+                    (raster.width * 4) as NSUInteger,
+                );
+        }
+        Some(Slot {
+            x,
+            y,
+            w: raster.width,
+            h: raster.height,
+            color: raster.color,
+        })
     }
 }
 
@@ -259,6 +275,10 @@ pub struct Renderer {
     theme: Theme,
     /// Copia local de la pantalla de cada panel.
     panes: HashMap<u64, Vec<Vec<Cell>>>,
+    /// Texto de los grupos de caracteres que aparecen en cada panel.
+    clusters: HashMap<u64, HashMap<char, String>>,
+    /// Códigos de grupo vistos al copiar filas, pendientes de traducir.
+    pending_clusters: Vec<(u64, char)>,
     quads: Vec<Quad>,
 }
 
@@ -314,6 +334,8 @@ impl Renderer {
             queue,
             pipeline,
             panes: HashMap::new(),
+            clusters: HashMap::new(),
+            pending_clusters: Vec::new(),
             quads: Vec::new(),
         }
     }
@@ -352,11 +374,27 @@ impl Renderer {
         let n = row.len().min(dst.len());
         dst[..n].copy_from_slice(&row[..n]);
         dst[n..].fill(Cell::default());
+        for c in &row[..n] {
+            if is_cluster(c.ch) {
+                self.pending_clusters.push((id, c.ch));
+            }
+        }
+    }
+
+    /// Códigos de grupo vistos desde la última llamada; hay que darles su
+    /// texto con [`Renderer::set_cluster`] (con la cuadrícula del panel).
+    pub fn take_pending_clusters(&mut self) -> Vec<(u64, char)> {
+        std::mem::take(&mut self.pending_clusters)
+    }
+
+    pub fn set_cluster(&mut self, id: u64, ch: char, text: String) {
+        self.clusters.entry(id).or_default().insert(ch, text);
     }
 
     /// Olvida las copias de los paneles que ya no se pintan.
     pub fn retain_panes(&mut self, keep: impl Fn(u64) -> bool) {
         self.panes.retain(|id, _| keep(*id));
+        self.clusters.retain(|id, _| keep(*id));
     }
 
     /// Construye un frame y lo presenta en el siguiente drawable del layer.
@@ -640,7 +678,14 @@ impl Renderer {
                         bold: cell.flags.contains(Flags::BOLD),
                         italic: cell.flags.contains(Flags::ITALIC),
                     };
-                    if let Some(slot) = self.atlas.get(&self.fonts, cell.ch, style, cells) {
+                    let slot = match self.clusters.get(&pane.id).and_then(|m| m.get(&cell.ch)) {
+                        Some(text) if is_cluster(cell.ch) => {
+                            let text = text.clone();
+                            self.atlas.get_text(&self.fonts, &text, style, cells)
+                        }
+                        _ => self.atlas.get(&self.fonts, cell.ch, style, cells),
+                    };
+                    if let Some(slot) = slot {
                         glyphs.push(glyph_quad(x, y, slot, fg_rgba));
                     }
                 }
@@ -656,6 +701,11 @@ impl Renderer {
             }
         }
     }
+}
+
+/// Carácter de celda que representa un grupo (ver `Grid::cluster`).
+fn is_cluster(ch: char) -> bool {
+    ch as u32 >= 0x10_0000
 }
 
 fn glyph_quad(x: f32, y: f32, slot: Slot, color: Rgba) -> Quad {
@@ -733,6 +783,9 @@ mod tests {
         r.ensure_pane(0, grid.cols(), grid.rows());
         for i in 0..grid.rows() {
             r.update_row(0, i, grid.row(i));
+        }
+        for (pane, ch) in r.take_pending_clusters() {
+            r.set_cluster(pane, ch, grid.char_text(ch).into_owned());
         }
         let pad = 4;
         let layout = TestLayout {
@@ -918,6 +971,32 @@ mod tests {
     }
 
     #[test]
+    fn combining_marks_are_drawn_on_their_base() {
+        let plain = {
+            let mut t = Term::new(2, 1);
+            t.advance(b"\x1b[?25le");
+            let (layout, m, pixels) = render(&t, 2.0);
+            cell_pixels(layout, m, &pixels, 0, 0)
+        };
+        let accented = {
+            let mut t = Term::new(2, 1);
+            t.advance("\x1b[?25le\u{301}".as_bytes());
+            let (layout, m, pixels) = render(&t, 2.0);
+            cell_pixels(layout, m, &pixels, 0, 0)
+        };
+        let lit = |px: &[[u8; 4]]| px.iter().filter(|p| p[1] > 150).count();
+        // Misma celda, con más píxeles encendidos: el acento está encima de la "e"
+        // (y no un recuadro de glifo inexistente).
+        assert!(
+            lit(&accented) > lit(&plain),
+            "{} vs {}",
+            lit(&accented),
+            lit(&plain)
+        );
+        assert!(lit(&accented) < lit(&plain) * 2);
+    }
+
+    #[test]
     fn hidden_cursor_is_not_drawn() {
         let mut term = Term::new(3, 1);
         term.advance(b"\x1b[?25l");
@@ -938,7 +1017,7 @@ mod tests {
         let Some(path) = std::env::var_os("RT_RENDER_DUMP") else {
             return;
         };
-        let mut term = Term::new(48, 9);
+        let mut term = Term::new(48, 10);
         term.advance(
             concat!(
                 "\x1b[1;32m~/rust-terminal\x1b[0m \x1b[34mmain\x1b[0m $ ls -la\r\n",
@@ -950,6 +1029,7 @@ mod tests {
                 "\x1b(0lqqqqwqqqqk\x1b(B ┌──┬──┐ ╭─╮ █▓▒░ ⠿\r\n",
                 "\x1b(0x    x    x\x1b(B │  │  │ ╰─╯ → ✓ ✗ λ\r\n",
                 "\x1b(0mqqqqvqqqqj\x1b(B └──┴──┘\r\n",
+                "Combinantes: e\u{301} n\u{303} a\u{308} o\u{302} ❤\u{fe0f} 👨\u{200d}💻\r\n",
                 "$ "
             )
             .as_bytes(),

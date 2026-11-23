@@ -128,12 +128,12 @@ impl Selection {
 
 fn word_start(grid: &Grid, p: Point) -> usize {
     let mut col = p.col;
-    if is_separator(cell_at(grid, p.line, col).ch) {
+    if is_separator(grid.base_char(cell_at(grid, p.line, col).ch)) {
         return col;
     }
     while col > 0 {
         let prev = cell_at(grid, p.line, col - 1);
-        if !prev.flags.contains(Flags::WIDE_SPACER) && is_separator(prev.ch) {
+        if !prev.flags.contains(Flags::WIDE_SPACER) && is_separator(grid.base_char(prev.ch)) {
             break;
         }
         col -= 1;
@@ -143,12 +143,12 @@ fn word_start(grid: &Grid, p: Point) -> usize {
 
 fn word_end(grid: &Grid, p: Point, cols: usize) -> usize {
     let mut col = p.col;
-    if is_separator(cell_at(grid, p.line, col).ch) {
+    if is_separator(grid.base_char(cell_at(grid, p.line, col).ch)) {
         return col;
     }
     while col + 1 < cols {
         let next = cell_at(grid, p.line, col + 1);
-        if !next.flags.contains(Flags::WIDE_SPACER) && is_separator(next.ch) {
+        if !next.flags.contains(Flags::WIDE_SPACER) && is_separator(grid.base_char(next.ch)) {
             break;
         }
         col += 1;
@@ -181,14 +181,16 @@ pub fn text_in_range(grid: &Grid, range: SelectionRange) -> String {
         let Some((a, b)) = range.cols_on(line, cols.max(row.cells.len())) else {
             continue;
         };
-        let mut text: String = row
+        let mut text = String::new();
+        for c in row
             .cells
             .iter()
             .take(b + 1)
             .skip(a)
             .filter(|c| !c.flags.contains(Flags::WIDE_SPACER))
-            .map(|c| c.ch)
-            .collect();
+        {
+            text.push_str(&grid.char_text(c.ch));
+        }
         let continues = row.wrapped && !range.block && line != range.end.line;
         if !continues {
             text.truncate(text.trim_end_matches(' ').len());

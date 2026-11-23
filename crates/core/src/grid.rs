@@ -5,7 +5,14 @@
 //! primera fila de la pantalla es [`Grid::screen_start`]. Al descartar líneas
 //! antiguas por el límite del historial, `first_line` avanza.
 
-use std::collections::VecDeque;
+use std::borrow::Cow;
+use std::collections::{HashMap, VecDeque};
+
+/// Primer código del área de uso privado suplementaria B: las celdas con un
+/// grupo de caracteres (base + combinantes) guardan aquí su índice.
+const CLUSTER_BASE: u32 = 0x10_0000;
+/// Cuántos grupos distintos caben (hasta U+10FFFD).
+const CLUSTER_MAX: usize = 0xFFFE;
 
 /// Número absoluto de línea (historial + pantalla).
 pub type Line = u64;
@@ -157,6 +164,10 @@ pub struct Grid {
     history_limit: usize,
     /// Número absoluto de `history[0]` (o de la primera fila si no hay historial).
     first_line: Line,
+    /// Grupos de caracteres (base + combinantes) de las celdas de esta
+    /// cuadrícula; la celda guarda `CLUSTER_BASE + índice`.
+    clusters: Vec<String>,
+    cluster_ids: HashMap<String, char>,
 }
 
 impl Grid {
@@ -174,7 +185,43 @@ impl Grid {
             history: VecDeque::new(),
             history_limit,
             first_line: 0,
+            clusters: Vec::new(),
+            cluster_ids: HashMap::new(),
         }
+    }
+
+    // --- Grupos de caracteres ---
+
+    /// Código para una celda con el texto `text` (base + combinantes). Si la
+    /// tabla está llena, se queda solo el carácter base.
+    pub fn cluster(&mut self, text: &str) -> char {
+        if let Some(&c) = self.cluster_ids.get(text) {
+            return c;
+        }
+        if self.clusters.len() >= CLUSTER_MAX {
+            return text.chars().next().unwrap_or(' ');
+        }
+        let c = char::from_u32(CLUSTER_BASE + self.clusters.len() as u32)
+            .expect("código privado válido");
+        self.clusters.push(text.to_owned());
+        self.cluster_ids.insert(text.to_owned(), c);
+        c
+    }
+
+    /// Texto de un carácter de celda: el propio carácter o su grupo.
+    pub fn char_text(&self, ch: char) -> Cow<'_, str> {
+        let code = ch as u32;
+        if code >= CLUSTER_BASE
+            && let Some(s) = self.clusters.get((code - CLUSTER_BASE) as usize)
+        {
+            return Cow::Borrowed(s);
+        }
+        Cow::Owned(ch.to_string())
+    }
+
+    /// Carácter base (el primero) de un carácter de celda.
+    pub fn base_char(&self, ch: char) -> char {
+        self.char_text(ch).chars().next().unwrap_or(' ')
     }
 
     pub fn cols(&self) -> usize {

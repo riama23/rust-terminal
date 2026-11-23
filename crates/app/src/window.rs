@@ -280,6 +280,9 @@ impl RenderTarget {
             } else {
                 term.drain_damage(|i, row| renderer.update_row(id, i, row));
             }
+            for (pane, ch) in renderer.take_pending_clusters() {
+                renderer.set_cluster(pane, ch, term.grid().char_text(ch).into_owned());
+            }
             // Mirando el historial, el cursor queda desplazado (o fuera de la vista).
             let mut cursor = term.cursor();
             let mut modes = term.modes();

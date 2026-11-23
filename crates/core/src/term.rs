@@ -275,7 +275,7 @@ impl Term {
         while let Some(row) = grid.line(line) {
             for (col, c) in row.cells.iter().enumerate() {
                 if !c.flags.contains(Flags::WIDE_SPACER) {
-                    chars.push(c.ch);
+                    chars.push(grid.base_char(c.ch));
                     positions.push((line, col));
                 }
             }
@@ -556,12 +556,14 @@ impl Term {
         let grid = &self.screen.grid;
         let mut lines: Vec<String> = (0..grid.rows())
             .map(|r| {
-                let line: String = grid
+                let mut line = String::new();
+                for c in grid
                     .row(r)
                     .iter()
                     .filter(|c| !c.flags.contains(Flags::WIDE_SPACER))
-                    .map(|c| c.ch)
-                    .collect();
+                {
+                    line.push_str(&grid.char_text(c.ch));
+                }
                 line.trim_end_matches(' ').to_owned()
             })
             .collect();
@@ -864,6 +866,49 @@ impl Screen {
         } else if self.cursor.row > 0 {
             self.cursor.row -= 1;
         }
+    }
+
+    /// Une un carácter de ancho 0 a la celda escrita justo antes.
+    fn combine(&mut self, c: char) {
+        let Cursor {
+            row,
+            col,
+            wrap_pending,
+        } = self.cursor;
+        let mut target = if wrap_pending {
+            col
+        } else if col > 0 {
+            col - 1
+        } else {
+            return;
+        };
+        if target > 0
+            && self
+                .grid
+                .cell(row, target)
+                .flags
+                .contains(Flags::WIDE_SPACER)
+        {
+            target -= 1;
+        }
+        let base = self.grid.cell(row, target).ch;
+        if base == ' '
+            && self
+                .grid
+                .cell(row, target)
+                .flags
+                .contains(Flags::WIDE_SPACER)
+        {
+            return;
+        }
+        let mut text = self.grid.char_text(base).into_owned();
+        // Límite por si llega una ristra interminable de combinantes.
+        if text.chars().count() >= 16 {
+            return;
+        }
+        text.push(c);
+        let id = self.grid.cluster(&text);
+        self.grid.cell_mut(row, target).ch = id;
     }
 
     /// Escribe una celda deshaciendo el par ancho que pudiera romper: si se
@@ -1314,9 +1359,11 @@ impl Perform for Screen {
         } else {
             c
         };
-        // Los caracteres de ancho 0 (combinantes, ZWJ…) se descartan por ahora.
         let width = match c.width() {
             Some(w @ 1..=2) => w,
+            // Ancho 0 (combinantes, ZWJ, selectores de variante): se une a la
+            // celda anterior sin mover el cursor, como en xterm.
+            Some(0) => return self.combine(c),
             _ => return,
         };
         let cols = self.cols();
@@ -1902,12 +1949,6 @@ mod tests {
     }
 
     #[test]
-    fn zero_width_chars_are_dropped() {
-        let t = term(5, 1, "e\u{301}x");
-        assert_eq!(t.snapshot_text(), "ex");
-    }
-
-    #[test]
     fn alt_screen_1049_round_trip() {
         let mut t = term(10, 3, "main\r\nprompt$ ");
         let before = pos(&t);
@@ -2435,5 +2476,52 @@ mod tests {
             recent.iter().any(|(s, n)| s.contains("31337") && *n >= 2),
             "{recent:?}"
         );
+    }
+
+    #[test]
+    fn combining_marks_join_the_previous_cell() {
+        let t = term(10, 1, "e\u{301}x");
+        assert_eq!(t.snapshot_text(), "e\u{301}x");
+        // El cursor no se mueve con la marca: la "x" va en la columna 1.
+        assert_eq!(t.grid().cell(0, 1).ch, 'x');
+        assert_eq!(t.grid().char_text(t.grid().cell(0, 0).ch), "e\u{301}");
+        assert_eq!(t.grid().base_char(t.grid().cell(0, 0).ch), 'e');
+    }
+
+    #[test]
+    fn emoji_sequences_keep_their_codepoints() {
+        // Corazón con selector de variante y familia con ZWJ: el texto se
+        // conserva entero y las columnas siguen las de wcwidth.
+        let input = "❤\u{fe0f}👨\u{200d}👩";
+        let t = term(10, 1, input);
+        assert_eq!(t.snapshot_text(), input);
+        assert_eq!(pos(&t), (0, 5));
+    }
+
+    #[test]
+    fn combining_mark_after_wrap_and_on_wide_char() {
+        // Tras escribir en la última columna (salto pendiente).
+        let t = term(3, 2, "abc\u{301}");
+        assert_eq!(t.snapshot_text(), "abc\u{301}");
+        // Sobre un carácter ancho, la marca va a su primera mitad.
+        let t = term(5, 1, "日\u{3099}x");
+        assert_eq!(t.grid().char_text(t.grid().cell(0, 0).ch), "日\u{3099}");
+        assert_eq!(t.grid().cell(0, 2).ch, 'x');
+    }
+
+    #[test]
+    fn combined_cells_survive_selection_reflow_and_history() {
+        let mut t = term(6, 2, "ae\u{301}iou\r\nxx\r\nyy");
+        let sel = SelectionRange {
+            start: selection::point(0, 0),
+            end: selection::point(0, 4),
+            block: false,
+        };
+        assert_eq!(selection::text_in_range(t.grid(), sel), "ae\u{301}iou");
+        t.resize(3, 2);
+        t.resize(6, 2);
+        let first = t.grid().first_line();
+        let row = &t.grid().line(first).unwrap().cells;
+        assert_eq!(t.grid().char_text(row[1].ch), "e\u{301}");
     }
 }
