@@ -1,4 +1,14 @@
-//! Cuadrícula de celdas de la pantalla visible.
+//! Cuadrícula de celdas: la pantalla visible y su historial (scrollback).
+//!
+//! Las líneas se identifican con un número absoluto ([`Line`]) que no cambia
+//! al hacer scroll: la más antigua guardada es [`Grid::first_line`] y la
+//! primera fila de la pantalla es [`Grid::screen_start`]. Al descartar líneas
+//! antiguas por el límite del historial, `first_line` avanza.
+
+use std::collections::VecDeque;
+
+/// Número absoluto de línea (historial + pantalla).
+pub type Line = u64;
 
 /// Color de primer plano o de fondo de una celda.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -25,6 +35,8 @@ impl Flags {
     /// Primera mitad de un carácter de doble ancho.
     pub const WIDE: Flags = Flags(1 << 6);
     /// Segunda mitad de un carácter de doble ancho: no se dibuja por sí misma.
+    /// En la última columna de una fila con salto suave, y sin `WIDE` delante,
+    /// marca el hueco que dejó un carácter ancho que no cabía.
     pub const WIDE_SPACER: Flags = Flags(1 << 7);
 
     pub const fn empty() -> Flags {
@@ -83,27 +95,81 @@ impl Cell {
             ..Cell::default()
         }
     }
+
+    fn is_leading_spacer(&self) -> bool {
+        self.flags.contains(Flags::WIDE_SPACER)
+    }
 }
 
-/// Filas de tamaño fijo. Las filas son `Vec` separados para que desplazar
-/// una región sea rotar punteros, no copiar celdas.
-///
-/// Cada operación que modifica una fila la marca como sucia; el renderizador
-/// recoge las filas sucias con [`Grid::drain_damage`].
+/// Una fila. Las del historial pueden ser más cortas que el ancho actual: se
+/// recortan las celdas por defecto del final para ahorrar memoria.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Row {
+    pub cells: Vec<Cell>,
+    /// La línea continúa en la fila siguiente (salto suave por ancho).
+    pub wrapped: bool,
+}
+
+impl Row {
+    fn blank(cols: usize, template: Cell) -> Row {
+        Row {
+            cells: vec![template; cols],
+            wrapped: false,
+        }
+    }
+
+    /// Recorta las celdas por defecto del final (no las de filas con salto
+    /// suave, que se unen con la siguiente en el reflow).
+    fn compact(&mut self) {
+        if !self.wrapped {
+            let len = self
+                .cells
+                .iter()
+                .rposition(|c| *c != Cell::default())
+                .map_or(0, |i| i + 1);
+            self.cells.truncate(len);
+        }
+        self.cells.shrink_to_fit();
+    }
+}
+
+/// Un punto (línea absoluta, columna) que el reflow debe recolocar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Point {
+    pub line: Line,
+    pub col: usize,
+    /// El cursor está en la última columna con el salto de línea pendiente:
+    /// en realidad apunta a la posición siguiente.
+    pub pending: bool,
+}
+
+/// Pantalla visible más historial.
 #[derive(Debug, Clone)]
 pub struct Grid {
     cols: usize,
-    rows: Vec<Vec<Cell>>,
+    rows: Vec<Row>,
     dirty: Vec<bool>,
+    history: VecDeque<Row>,
+    history_limit: usize,
+    /// Número absoluto de `history[0]` (o de la primera fila si no hay historial).
+    first_line: Line,
 }
 
 impl Grid {
+    /// Cuadrícula sin historial.
     pub fn new(cols: usize, rows: usize) -> Grid {
+        Grid::with_history(cols, rows, 0)
+    }
+
+    pub fn with_history(cols: usize, rows: usize, history_limit: usize) -> Grid {
         assert!(cols > 0 && rows > 0, "la cuadrícula no puede estar vacía");
         Grid {
             cols,
-            rows: vec![vec![Cell::default(); cols]; rows],
+            rows: vec![Row::blank(cols, Cell::default()); rows],
             dirty: vec![true; rows],
+            history: VecDeque::new(),
+            history_limit,
+            first_line: 0,
         }
     }
 
@@ -116,17 +182,66 @@ impl Grid {
     }
 
     pub fn cell(&self, row: usize, col: usize) -> &Cell {
-        &self.rows[row][col]
+        &self.rows[row].cells[col]
     }
 
     pub fn cell_mut(&mut self, row: usize, col: usize) -> &mut Cell {
         self.dirty[row] = true;
-        &mut self.rows[row][col]
+        &mut self.rows[row].cells[col]
     }
 
     pub fn row(&self, row: usize) -> &[Cell] {
-        &self.rows[row]
+        &self.rows[row].cells
     }
+
+    pub fn is_wrapped(&self, row: usize) -> bool {
+        self.rows[row].wrapped
+    }
+
+    pub fn set_wrapped(&mut self, row: usize, wrapped: bool) {
+        self.rows[row].wrapped = wrapped;
+    }
+
+    // --- Historial y líneas absolutas ---
+
+    pub fn history_len(&self) -> usize {
+        self.history.len()
+    }
+
+    /// Número absoluto de la línea más antigua guardada.
+    pub fn first_line(&self) -> Line {
+        self.first_line
+    }
+
+    /// Número absoluto de la primera fila de la pantalla.
+    pub fn screen_start(&self) -> Line {
+        self.first_line + self.history.len() as Line
+    }
+
+    /// Una línea por su número absoluto, del historial o de la pantalla.
+    pub fn line(&self, line: Line) -> Option<&Row> {
+        let i = line.checked_sub(self.first_line)? as usize;
+        if i < self.history.len() {
+            self.history.get(i)
+        } else {
+            self.rows.get(i - self.history.len())
+        }
+    }
+
+    pub fn clear_history(&mut self) {
+        self.first_line = self.screen_start();
+        self.history.clear();
+    }
+
+    /// Memoria aproximada que ocupan las celdas del historial, en bytes.
+    pub fn history_bytes(&self) -> usize {
+        self.history
+            .iter()
+            .map(|r| r.cells.capacity() * std::mem::size_of::<Cell>() + std::mem::size_of::<Row>())
+            .sum()
+    }
+
+    // --- Daños ---
 
     pub fn mark_all_dirty(&mut self) {
         self.dirty.fill(true);
@@ -136,37 +251,30 @@ impl Grid {
         self.dirty[row]
     }
 
+    pub fn any_dirty(&self) -> bool {
+        self.dirty.iter().any(|d| *d)
+    }
+
+    pub fn clear_damage(&mut self) {
+        self.dirty.fill(false);
+    }
+
     /// Llama a `f` con cada fila sucia y la marca como limpia.
     pub fn drain_damage(&mut self, mut f: impl FnMut(usize, &[Cell])) {
         for (i, (row, dirty)) in self.rows.iter().zip(&mut self.dirty).enumerate() {
             if std::mem::take(dirty) {
-                f(i, row);
+                f(i, &row.cells);
             }
         }
     }
 
-    /// Cambia el tamaño recortando o rellenando por la derecha y por abajo.
-    pub fn resize(&mut self, cols: usize, rows: usize) {
-        assert!(cols > 0 && rows > 0, "la cuadrícula no puede estar vacía");
-        for row in &mut self.rows {
-            row.resize(cols, Cell::default());
-            // Un carácter ancho cortado por el borde derecho deja de serlo.
-            if let Some(last) = row.last_mut()
-                && last.flags.contains(Flags::WIDE)
-            {
-                *last = Cell::default();
-            }
-        }
-        self.rows.resize_with(rows, || vec![Cell::default(); cols]);
-        self.cols = cols;
-        self.dirty = vec![true; rows];
-    }
+    // --- Edición ---
 
     /// Rellena `[start, end)` de una fila con `template`.
     pub fn clear_cols(&mut self, row: usize, start: usize, end: usize, template: Cell) {
         let end = end.min(self.cols);
         if start < end {
-            self.rows[row][start..end].fill(template);
+            self.rows[row].cells[start..end].fill(template);
             self.dirty[row] = true;
         }
     }
@@ -175,7 +283,8 @@ impl Grid {
     pub fn clear_rows(&mut self, start: usize, end: usize, template: Cell) {
         let end = end.min(self.rows.len());
         for row in self.rows.iter_mut().take(end).skip(start) {
-            row.fill(template);
+            row.cells.fill(template);
+            row.wrapped = false;
         }
         if start < end {
             self.dirty[start..end].fill(true);
@@ -183,11 +292,25 @@ impl Grid {
     }
 
     /// Sube `n` filas el contenido de la región `[top, bottom]` (inclusive).
-    /// Las filas que entran por abajo quedan en blanco.
+    /// Las filas que entran por abajo quedan en blanco. Si la región empieza
+    /// arriba del todo y hay historial, las que salen se guardan en él.
     pub fn scroll_up(&mut self, top: usize, bottom: usize, n: usize, template: Cell) {
         let n = n.min(bottom + 1 - top);
-        self.rows[top..=bottom].rotate_left(n);
-        self.clear_rows(bottom + 1 - n, bottom + 1, template);
+        if top == 0 && self.history_limit > 0 {
+            for i in 0..n {
+                let mut row = std::mem::replace(&mut self.rows[i], Row::blank(self.cols, template));
+                row.compact();
+                self.history.push_back(row);
+            }
+            while self.history.len() > self.history_limit {
+                self.history.pop_front();
+                self.first_line += 1;
+            }
+            self.rows[..=bottom].rotate_left(n);
+        } else {
+            self.rows[top..=bottom].rotate_left(n);
+            self.clear_rows(bottom + 1 - n, bottom + 1, template);
+        }
         self.dirty[top..=bottom].fill(true);
     }
 
@@ -203,7 +326,7 @@ impl Grid {
     /// Inserta `n` celdas en blanco en `col`, empujando el resto a la derecha.
     pub fn insert_cells(&mut self, row: usize, col: usize, n: usize, template: Cell) {
         let n = n.min(self.cols - col);
-        let line = &mut self.rows[row][col..];
+        let line = &mut self.rows[row].cells[col..];
         line.rotate_right(n);
         line[..n].fill(template);
         self.dirty[row] = true;
@@ -212,11 +335,213 @@ impl Grid {
     /// Borra `n` celdas en `col`, trayendo el resto hacia la izquierda.
     pub fn delete_cells(&mut self, row: usize, col: usize, n: usize, template: Cell) {
         let n = n.min(self.cols - col);
-        let line = &mut self.rows[row][col..];
+        let line = &mut self.rows[row].cells[col..];
         line.rotate_left(n);
         let len = line.len();
         line[len - n..].fill(template);
         self.dirty[row] = true;
+    }
+
+    // --- Cambio de tamaño ---
+
+    /// Cambia el tamaño recortando o rellenando, sin reajustar líneas (para
+    /// la pantalla alternativa).
+    pub fn resize_truncate(&mut self, cols: usize, rows: usize) {
+        assert!(cols > 0 && rows > 0, "la cuadrícula no puede estar vacía");
+        for row in &mut self.rows {
+            row.cells.resize(cols, Cell::default());
+            row.wrapped = false;
+            // Un carácter ancho cortado por el borde derecho deja de serlo.
+            if let Some(last) = row.cells.last_mut()
+                && last.flags.contains(Flags::WIDE)
+            {
+                *last = Cell::default();
+            }
+        }
+        self.rows
+            .resize_with(rows, || Row::blank(cols, Cell::default()));
+        self.cols = cols;
+        self.dirty = vec![true; rows];
+    }
+
+    /// Cambia el tamaño reajustando las líneas largas al nuevo ancho (reflow)
+    /// y mueve líneas entre la pantalla y el historial para que `points[0]`
+    /// (el cursor) siga en pantalla. Recoloca todos los `points`.
+    ///
+    /// Las filas por debajo del cursor que estén vacías se descartan.
+    pub fn resize_reflow(&mut self, cols: usize, rows: usize, points: &mut [Point]) {
+        assert!(cols > 0 && rows > 0, "la cuadrícula no puede estar vacía");
+        let cursor_line = points.first().map(|p| p.line);
+
+        // 1. Todas las filas, sin las vacías del final que estén por debajo del cursor.
+        let mut all: Vec<Row> = self.history.drain(..).collect();
+        let old_first = self.first_line;
+        all.append(&mut self.rows);
+        let cursor_idx = cursor_line.map(|l| (l - old_first) as usize);
+        while all.len() > cursor_idx.map_or(0, |c| c + 1)
+            && all
+                .last()
+                .is_some_and(|r| !r.wrapped && r.cells.iter().all(|c| *c == Cell::default()))
+        {
+            all.pop();
+        }
+
+        // 2. Líneas lógicas: se unen las filas con salto suave. Cada punto se
+        //    traduce a (línea lógica, desplazamiento dentro de ella).
+        struct Logical {
+            cells: Vec<Cell>,
+        }
+        let mut logical: Vec<Logical> = Vec::new();
+        let mut point_pos: Vec<Option<(usize, usize)>> = vec![None; points.len()];
+        let mut current: Vec<Cell> = Vec::new();
+        for (idx, mut row) in all.into_iter().enumerate() {
+            let line = old_first + idx as Line;
+            let wrapped = row.wrapped;
+            // El hueco de un carácter ancho que no cabía no es contenido.
+            if wrapped && row.cells.last().is_some_and(|c| c.is_leading_spacer()) {
+                let n = row.cells.len();
+                let prev_is_wide = n >= 2 && row.cells[n - 2].flags.contains(Flags::WIDE);
+                if !prev_is_wide {
+                    row.cells.pop();
+                }
+            }
+            if !wrapped {
+                let len = row
+                    .cells
+                    .iter()
+                    .rposition(|c| *c != Cell::default())
+                    .map_or(0, |i| i + 1);
+                row.cells.truncate(len);
+            }
+            for (pi, p) in points.iter().enumerate() {
+                if p.line == line {
+                    point_pos[pi] =
+                        Some((logical.len(), current.len() + p.col + p.pending as usize));
+                }
+            }
+            current.extend(row.cells);
+            if !wrapped {
+                logical.push(Logical {
+                    cells: std::mem::take(&mut current),
+                });
+            }
+        }
+        if !current.is_empty() {
+            logical.push(Logical { cells: current });
+        }
+
+        // 3. Se vuelven a partir al nuevo ancho.
+        let mut out: Vec<Row> = Vec::new();
+        let mut new_points: Vec<Option<Point>> = vec![None; points.len()];
+        for (li, l) in logical.iter().enumerate() {
+            let start_row = out.len();
+            let mut row = Row::default();
+            // Posición (fila relativa, columna) de cada celda de la línea lógica.
+            let mut positions: Vec<(usize, usize)> = Vec::with_capacity(l.cells.len());
+            let mut r = 0;
+            for cell in &l.cells {
+                let width = if cell.flags.contains(Flags::WIDE) {
+                    2
+                } else {
+                    1
+                };
+                let is_spacer = cell.flags.contains(Flags::WIDE_SPACER);
+                if !is_spacer && row.cells.len() + width > cols {
+                    if width == 2 && cols >= 2 && row.cells.len() < cols {
+                        row.cells.push(Cell {
+                            flags: Flags::WIDE_SPACER,
+                            ..Cell::default()
+                        });
+                    }
+                    row.wrapped = true;
+                    out.push(std::mem::take(&mut row));
+                    r += 1;
+                }
+                if is_spacer && row.cells.len() >= cols {
+                    // La segunda mitad acompaña a su primera mitad.
+                    positions.push((r, cols - 1));
+                    continue;
+                }
+                positions.push((r, row.cells.len()));
+                row.cells.push(*cell);
+            }
+            out.push(row);
+
+            for (pi, pos) in point_pos.iter().enumerate() {
+                let Some((pl, off)) = *pos else { continue };
+                if pl != li {
+                    continue;
+                }
+                let (rr, cc, pending) = match positions.get(off) {
+                    Some(&(r, c)) => (r, c, false),
+                    None => {
+                        // Más allá del contenido (p. ej. el cursor tras un espacio).
+                        let extra = off - positions.len();
+                        let (lr, lc) = positions.last().map_or((0, 0), |&(r, c)| (r, c + 1));
+                        if lc + extra < cols {
+                            (lr, lc + extra, false)
+                        } else if extra == 0 {
+                            // Justo tras una fila llena: salto de línea pendiente.
+                            (lr, cols - 1, true)
+                        } else {
+                            (lr, cols - 1, false)
+                        }
+                    }
+                };
+                new_points[pi] = Some(Point {
+                    line: (start_row + rr) as Line,
+                    col: cc,
+                    pending,
+                });
+            }
+        }
+
+        // 4. Qué filas quedan en pantalla: las últimas, pero sin dejar fuera el cursor.
+        let total = out.len();
+        let mut start = total.saturating_sub(rows);
+        if let Some(Some(c)) = new_points.first() {
+            let c = c.line as usize;
+            if c < start {
+                start = c;
+            } else if c >= start + rows {
+                start = c + 1 - rows;
+            }
+        }
+        let mut screen: Vec<Row> = out.split_off(start.min(out.len()));
+        screen.truncate(rows);
+        for row in &mut screen {
+            row.cells.resize(cols, Cell::default());
+        }
+        screen.resize_with(rows, || Row::blank(cols, Cell::default()));
+        let mut history = out;
+        for row in &mut history {
+            row.compact();
+        }
+        let dropped = history.len().saturating_sub(self.history_limit);
+        history.drain(..dropped);
+
+        let new_first = old_first;
+        let history_offset = start - history.len();
+        for (p, np) in points.iter_mut().zip(new_points) {
+            *p = match np {
+                Some(np) if (np.line as usize) >= history_offset => Point {
+                    line: new_first + np.line - history_offset as Line,
+                    ..np
+                },
+                // Punto descartado o fuera de lo guardado: a la línea más antigua.
+                _ => Point {
+                    line: new_first,
+                    col: 0,
+                    pending: false,
+                },
+            };
+        }
+
+        self.history = history.into();
+        self.rows = screen;
+        self.cols = cols;
+        self.first_line = new_first;
+        self.dirty = vec![true; rows];
     }
 }
 
@@ -228,6 +553,12 @@ mod tests {
         let mut rows = Vec::new();
         grid.drain_damage(|i, _| rows.push(i));
         rows
+    }
+
+    #[test]
+    fn cell_is_compact() {
+        // Base para estimar la memoria del historial.
+        assert_eq!(std::mem::size_of::<Cell>(), 16);
     }
 
     #[test]
@@ -247,5 +578,35 @@ mod tests {
         assert_eq!(dirty_rows(&mut g), [2]);
         g.scroll_up(1, 2, 1, Cell::default());
         assert_eq!(dirty_rows(&mut g), [1, 2]);
+    }
+
+    #[test]
+    fn scrolled_out_rows_go_to_history_and_are_compacted() {
+        let mut g = Grid::with_history(10, 2, 100);
+        g.cell_mut(0, 0).ch = 'a';
+        g.scroll_up(0, 1, 1, Cell::default());
+        assert_eq!(g.history_len(), 1);
+        assert_eq!(g.line(0).unwrap().cells.len(), 1);
+        assert_eq!(g.screen_start(), 1);
+    }
+
+    #[test]
+    fn history_limit_evicts_oldest() {
+        let mut g = Grid::with_history(4, 1, 3);
+        for i in 0..5 {
+            g.cell_mut(0, 0).ch = char::from(b'0' + i);
+            g.scroll_up(0, 0, 1, Cell::default());
+        }
+        assert_eq!(g.history_len(), 3);
+        assert_eq!(g.first_line(), 2);
+        assert_eq!(g.line(2).unwrap().cells[0].ch, '2');
+        assert!(g.line(1).is_none());
+    }
+
+    #[test]
+    fn scroll_region_not_at_top_does_not_feed_history() {
+        let mut g = Grid::with_history(4, 3, 10);
+        g.scroll_up(1, 2, 1, Cell::default());
+        assert_eq!(g.history_len(), 0);
     }
 }

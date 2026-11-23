@@ -90,6 +90,35 @@ fn bench(name: &str, input: &[u8]) {
     );
 }
 
+/// Reflow con el historial lleno: estrechar y ensanchar la ventana.
+fn bench_reflow() {
+    let mut term = Term::new(200, 50);
+    let line = "palabra ".repeat(20);
+    let mut input = String::new();
+    for i in 0..(rust_terminal_core::term::HISTORY_LIMIT + 100) {
+        let _ = write!(input, "{i:>6} {line}\r\n");
+    }
+    term.advance(input.as_bytes());
+    let history = term.grid().history_len();
+    let bytes = term.grid().history_bytes();
+    println!(
+        "historial      {history} líneas ≈ {:.1} MiB ({} B/línea de ~170 columnas)",
+        bytes as f64 / (1 << 20) as f64,
+        bytes / history.max(1)
+    );
+    let mut best = Duration::MAX;
+    for _ in 0..RUNS {
+        let start = Instant::now();
+        term.resize(120, 50);
+        term.resize(200, 50);
+        best = best.min(start.elapsed() / 2);
+    }
+    println!(
+        "reflow         {:>8.1} ms por cambio de ancho (historial lleno)",
+        best.as_secs_f64() * 1000.0
+    );
+}
+
 fn main() {
     if cfg!(debug_assertions) {
         eprintln!("aviso: compilado sin optimizar; usa --release para medir");
@@ -99,4 +128,5 @@ fn main() {
     bench("scroll región", &scroll_region());
     bench("unicode", &unicode());
     bench("movimientos", &cursor_motion());
+    bench_reflow();
 }

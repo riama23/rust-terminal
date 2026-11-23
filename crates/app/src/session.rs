@@ -182,13 +182,20 @@ impl RenderTarget {
             let (cols, rows) = (grid.cols(), grid.rows());
             if renderer.ensure_size(cols, rows) {
                 for i in 0..rows {
-                    renderer.update_row(i, term.grid().row(i));
+                    renderer.update_row(i, term.visible_row(i));
                 }
                 term.drain_damage(|_, _| {});
             } else {
                 term.drain_damage(|i, row| renderer.update_row(i, row));
             }
-            (term.cursor(), term.modes())
+            // Mirando el historial, el cursor queda desplazado (o fuera de la vista).
+            let mut cursor = term.cursor();
+            let mut modes = term.modes();
+            cursor.row += term.display_offset();
+            if cursor.row >= rows {
+                modes.cursor_visible = false;
+            }
+            (cursor, modes)
         };
         renderer.draw(&shared.layer.lock(), layout, cursor, modes);
         shared.frames.fetch_add(1, SeqCst);

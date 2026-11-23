@@ -6,7 +6,10 @@ use std::sync::OnceLock;
 use unicode_width::UnicodeWidthChar;
 use vte::{Params, Parser, Perform};
 
-use crate::grid::{Cell, Color, Flags, Grid};
+use crate::grid::{Cell, Color, Flags, Grid, Point};
+
+/// Líneas de historial de la pantalla principal (límite inicial, pendiente de medir).
+pub const HISTORY_LIMIT: usize = 10_000;
 
 /// Posición del cursor. `wrap_pending` indica que se escribió en la última
 /// columna y el siguiente carácter imprimible salta de línea antes.
@@ -88,6 +91,10 @@ struct Screen {
     /// Bytes que hay que devolver a la aplicación por la PTY.
     responses: Vec<u8>,
     bell: bool,
+    /// Líneas que la vista está desplazada hacia el historial (0 = abajo del todo).
+    display_offset: usize,
+    /// La vista cambió entera (desplazamiento, reflow…) y hay que repintar todo.
+    view_dirty: bool,
 }
 
 pub struct Term {
@@ -105,17 +112,71 @@ impl Term {
 
     /// Aplica un lote de bytes leídos de la PTY.
     pub fn advance(&mut self, bytes: &[u8]) {
+        let start = self.screen.grid.screen_start();
         self.parser.advance(&mut self.screen, bytes);
+        let s = &mut self.screen;
+        if s.display_offset > 0 {
+            // Si se está mirando el historial, la vista no se mueve con la salida nueva.
+            let pushed = s.grid.screen_start().saturating_sub(start) as usize;
+            let offset = (s.display_offset + pushed).min(s.grid.history_len());
+            if offset != s.display_offset || pushed > 0 {
+                s.view_dirty = true;
+            }
+            s.display_offset = offset;
+        }
+    }
+
+    /// Líneas que la vista está desplazada hacia el historial.
+    pub fn display_offset(&self) -> usize {
+        self.screen.display_offset
+    }
+
+    /// Desplaza la vista `delta` líneas (positivo = hacia el historial).
+    pub fn scroll_display(&mut self, delta: isize) {
+        let s = &mut self.screen;
+        let max = s.grid.history_len() as isize;
+        let offset = (s.display_offset as isize + delta).clamp(0, max) as usize;
+        if offset != s.display_offset {
+            s.display_offset = offset;
+            s.view_dirty = true;
+        }
+    }
+
+    pub fn scroll_to_bottom(&mut self) {
+        self.scroll_display(isize::MIN / 2);
+    }
+
+    /// Fila `i` de la vista (teniendo en cuenta el desplazamiento). Las filas
+    /// del historial pueden ser más cortas que el ancho.
+    pub fn visible_row(&self, i: usize) -> &[Cell] {
+        let s = &self.screen;
+        if s.display_offset == 0 {
+            return s.grid.row(i);
+        }
+        let line = s.grid.screen_start() - s.display_offset as u64 + i as u64;
+        s.grid.line(line).map_or(&[], |r| &r.cells)
     }
 
     pub fn grid(&self) -> &Grid {
         &self.screen.grid
     }
 
-    /// Llama a `f` con cada fila de la pantalla activa que cambió desde la
-    /// última llamada.
-    pub fn drain_damage(&mut self, f: impl FnMut(usize, &[Cell])) {
-        self.screen.grid.drain_damage(f);
+    /// Llama a `f` con cada fila de la vista que cambió desde la última
+    /// llamada. Las filas del historial pueden ser más cortas que el ancho.
+    pub fn drain_damage(&mut self, mut f: impl FnMut(usize, &[Cell])) {
+        let s = &mut self.screen;
+        if s.display_offset == 0 && !s.view_dirty {
+            s.grid.drain_damage(f);
+            return;
+        }
+        if s.view_dirty || s.grid.any_dirty() {
+            for i in 0..s.grid.rows() {
+                f(i, self.visible_row(i));
+            }
+            let s = &mut self.screen;
+            s.grid.clear_damage();
+            s.view_dirty = false;
+        }
     }
 
     pub fn cursor(&self) -> Cursor {
@@ -149,13 +210,59 @@ impl Term {
     /// la pantalla entera.
     pub fn resize(&mut self, cols: usize, rows: usize) {
         let s = &mut self.screen;
-        s.grid.resize(cols, rows);
-        s.inactive_grid.resize(cols, rows);
+        if s.modes.alt_screen {
+            // La alternativa se recorta; la principal (inactiva) se reajusta
+            // usando su cursor guardado como referencia.
+            s.grid.resize_truncate(cols, rows);
+            let main = &mut s.inactive_grid;
+            let mut points: Vec<Point> = s
+                .inactive_saved
+                .iter()
+                .map(|sv| Point {
+                    line: main.screen_start() + sv.cursor.row as u64,
+                    col: sv.cursor.col,
+                    pending: sv.cursor.wrap_pending,
+                })
+                .collect();
+            main.resize_reflow(cols, rows, &mut points);
+            if let (Some(sv), Some(p)) = (s.inactive_saved.as_mut(), points.first()) {
+                sv.cursor.row = (p.line.saturating_sub(main.screen_start()) as usize).min(rows - 1);
+                sv.cursor.col = p.col.min(cols - 1);
+                sv.cursor.wrap_pending = p.pending;
+            }
+            s.cursor.row = s.cursor.row.min(rows - 1);
+            s.cursor.col = s.cursor.col.min(cols - 1);
+            s.cursor.wrap_pending = false;
+        } else {
+            let start = s.grid.screen_start();
+            let mut points = vec![Point {
+                line: start + s.cursor.row as u64,
+                col: s.cursor.col,
+                pending: s.cursor.wrap_pending,
+            }];
+            if let Some(sv) = s.saved {
+                points.push(Point {
+                    line: start + sv.cursor.row as u64,
+                    col: sv.cursor.col,
+                    pending: sv.cursor.wrap_pending,
+                });
+            }
+            s.grid.resize_reflow(cols, rows, &mut points);
+            let start = s.grid.screen_start();
+            s.cursor.row = (points[0].line.saturating_sub(start) as usize).min(rows - 1);
+            s.cursor.col = points[0].col.min(cols - 1);
+            s.cursor.wrap_pending = points[0].pending && s.modes.autowrap;
+            if let (Some(sv), Some(p)) = (s.saved.as_mut(), points.get(1)) {
+                sv.cursor.row = (p.line.saturating_sub(start) as usize).min(rows - 1);
+                sv.cursor.col = p.col.min(cols - 1);
+                sv.cursor.wrap_pending = p.pending;
+            }
+            s.inactive_grid.resize_truncate(cols, rows);
+        }
         s.top = 0;
         s.bottom = rows - 1;
-        s.cursor.row = s.cursor.row.min(rows - 1);
-        s.cursor.col = s.cursor.col.min(cols - 1);
-        s.cursor.wrap_pending = false;
+        s.display_offset = s.display_offset.min(s.grid.history_len());
+        s.view_dirty = true;
     }
 
     /// La pantalla como texto: una línea por fila, sin espacios finales y sin
@@ -269,7 +376,7 @@ fn dec_line_drawing(c: char) -> char {
 impl Screen {
     fn new(cols: usize, rows: usize) -> Screen {
         Screen {
-            grid: Grid::new(cols, rows),
+            grid: Grid::with_history(cols, rows, HISTORY_LIMIT),
             inactive_grid: Grid::new(cols, rows),
             cursor: Cursor::default(),
             pen: Pen::default(),
@@ -283,6 +390,17 @@ impl Screen {
             title_changed: false,
             responses: Vec::new(),
             bell: false,
+            display_offset: 0,
+            view_dirty: true,
+        }
+    }
+
+    /// La pantalla principal, esté activa o no.
+    fn main_grid(&mut self) -> &mut Grid {
+        if self.modes.alt_screen {
+            &mut self.inactive_grid
+        } else {
+            &mut self.grid
         }
     }
 
@@ -329,12 +447,22 @@ impl Screen {
     /// pisa una mitad de un carácter de doble ancho, la otra queda en blanco.
     fn write_cell(&mut self, row: usize, col: usize, cell: Cell) {
         let old = self.grid.cell(row, col).flags;
-        if old.contains(Flags::WIDE) && col + 1 < self.cols() {
+        if old.contains(Flags::WIDE)
+            && col + 1 < self.cols()
+            && self
+                .grid
+                .cell(row, col + 1)
+                .flags
+                .contains(Flags::WIDE_SPACER)
+        {
             let next = self.grid.cell_mut(row, col + 1);
             next.ch = ' ';
             next.flags.remove(Flags::WIDE_SPACER);
         }
-        if old.contains(Flags::WIDE_SPACER) && col > 0 {
+        if old.contains(Flags::WIDE_SPACER)
+            && col > 0
+            && self.grid.cell(row, col - 1).flags.contains(Flags::WIDE)
+        {
             let prev = self.grid.cell_mut(row, col - 1);
             prev.ch = ' ';
             prev.flags.remove(Flags::WIDE);
@@ -367,7 +495,11 @@ impl Screen {
                 self.grid.clear_cols(row, 0, col + 1, blank);
             }
             2 => self.grid.clear_rows(0, self.rows(), blank),
-            // 3 borra el scrollback, que llega en M4.
+            3 => {
+                self.main_grid().clear_history();
+                self.display_offset = 0;
+                self.view_dirty = true;
+            }
             _ => {}
         }
     }
@@ -590,14 +722,20 @@ impl Perform for Screen {
             return;
         }
         if self.cursor.wrap_pending {
+            self.grid.set_wrapped(self.cursor.row, true);
             self.cursor.col = 0;
             self.linefeed();
         }
         // Un carácter ancho que no cabe en la última columna salta de línea antes.
         if width == 2 && self.cursor.col + 1 == cols {
             if self.modes.autowrap {
-                let blank = self.blank();
-                self.write_cell(self.cursor.row, self.cursor.col, blank);
+                // El hueco se marca para que el reflow no lo tome por contenido.
+                let spacer = Cell {
+                    flags: Flags::WIDE_SPACER,
+                    ..self.blank()
+                };
+                self.write_cell(self.cursor.row, self.cursor.col, spacer);
+                self.grid.set_wrapped(self.cursor.row, true);
                 self.cursor.col = 0;
                 self.linefeed();
             } else {
@@ -1196,5 +1334,157 @@ mod tests {
         t.advance(b"\x1b[2;1Hx");
         assert_eq!(dirty_rows(&mut t), [1]);
         assert!(dirty_rows(&mut t).is_empty());
+    }
+
+    fn history_text(t: &Term) -> Vec<String> {
+        let g = t.grid();
+        (g.first_line()..g.screen_start())
+            .map(|l| {
+                g.line(l)
+                    .unwrap()
+                    .cells
+                    .iter()
+                    .filter(|c| !c.flags.contains(Flags::WIDE_SPACER))
+                    .map(|c| c.ch)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    /// Texto de historial + pantalla, para comparar contenidos tras un reflow.
+    fn all_text(t: &Term) -> String {
+        let mut lines = history_text(t);
+        lines.push(t.snapshot_text());
+        lines.join("\n").trim_end().to_owned()
+    }
+
+    #[test]
+    fn scrolled_lines_go_to_history() {
+        let t = term(10, 2, "uno\r\ndos\r\ntres\r\ncuatro");
+        assert_eq!(history_text(&t), ["uno", "dos"]);
+        assert_eq!(t.snapshot_text(), "tres\ncuatro");
+    }
+
+    #[test]
+    fn alt_screen_does_not_feed_history() {
+        let t = term(10, 2, "\x1b[?1049ha\r\nb\r\nc\r\nd");
+        assert!(history_text(&t).is_empty());
+    }
+
+    #[test]
+    fn ed3_clears_history() {
+        let mut t = term(10, 1, "a\r\nb\r\nc");
+        assert_eq!(t.grid().history_len(), 2);
+        t.advance(b"\x1b[3J");
+        assert_eq!(t.grid().history_len(), 0);
+    }
+
+    #[test]
+    fn autowrap_marks_rows_as_wrapped() {
+        let t = term(3, 3, "abcdef\r\ng");
+        assert!(t.grid().is_wrapped(0));
+        assert!(!t.grid().is_wrapped(1));
+    }
+
+    #[test]
+    fn display_offset_scrolls_view_and_stays_stable() {
+        let mut t = term(5, 2, "1\r\n2\r\n3\r\n4");
+        t.scroll_display(1);
+        assert_eq!(t.display_offset(), 1);
+        assert_eq!(t.visible_row(0)[0].ch, '2');
+        // Llega salida: la vista sigue mostrando lo mismo.
+        t.advance(b"\r\n5");
+        assert_eq!(t.display_offset(), 2);
+        assert_eq!(t.visible_row(0)[0].ch, '2');
+        t.scroll_to_bottom();
+        assert_eq!(t.display_offset(), 0);
+        assert_eq!(t.visible_row(0)[0].ch, '4');
+        // No se puede subir más allá del historial.
+        t.scroll_display(100);
+        assert_eq!(t.display_offset(), t.grid().history_len());
+    }
+
+    #[test]
+    fn scrolled_view_reports_full_damage() {
+        let mut t = term(5, 2, "1\r\n2\r\n3");
+        dirty_rows(&mut t);
+        t.scroll_display(1);
+        assert_eq!(dirty_rows(&mut t), [0, 1]);
+        assert!(dirty_rows(&mut t).is_empty());
+    }
+
+    #[test]
+    fn reflow_narrower_wraps_long_lines() {
+        let mut t = term(10, 4, "abcdefgh\r\nxy");
+        t.resize(4, 4);
+        assert_eq!(t.snapshot_text(), "abcd\nefgh\nxy");
+        assert!(t.grid().is_wrapped(0));
+        assert_eq!(pos(&t), (2, 2));
+    }
+
+    #[test]
+    fn reflow_wider_joins_wrapped_lines() {
+        let mut t = term(4, 4, "abcdefgh\r\nxy");
+        assert_eq!(t.snapshot_text(), "abcd\nefgh\nxy");
+        t.resize(10, 4);
+        assert_eq!(t.snapshot_text(), "abcdefgh\nxy");
+        assert_eq!(pos(&t), (1, 2));
+    }
+
+    #[test]
+    fn reflow_round_trip_preserves_content() {
+        let input = "primera línea bastante larga\r\n日本語の文章とテキスト\r\ncorta\r\n\x1b[31mcolor\x1b[0m fin";
+        let mut t = term(20, 6, input);
+        let before = all_text(&t);
+        let cursor = pos(&t);
+        for cols in [7, 5, 3, 11, 20] {
+            t.resize(cols, 6);
+        }
+        assert_eq!(all_text(&t), before);
+        assert_eq!(pos(&t), cursor);
+        assert_eq!(t.grid().cell(t.cursor().row, 0).fg, Color::Indexed(1));
+    }
+
+    #[test]
+    fn reflow_keeps_wide_char_whole_at_the_edge() {
+        // "ab日" en 3 columnas: el ancho no cabe en la última y salta.
+        let mut t = term(4, 3, "ab日c");
+        t.resize(3, 3);
+        assert_eq!(t.snapshot_text(), "ab\n日c");
+        t.resize(4, 3);
+        assert_eq!(t.snapshot_text(), "ab日\nc");
+    }
+
+    #[test]
+    fn reflow_moves_lines_between_history_and_screen() {
+        let mut t = term(10, 3, "1111\r\n2222\r\n3333\r\n4444");
+        assert_eq!(history_text(&t), ["1111"]);
+        // Más estrecho: las líneas ocupan el doble y suben al historial.
+        t.resize(2, 3);
+        assert_eq!(t.snapshot_text(), "33\n44\n44");
+        assert!(t.cursor().wrap_pending);
+        // Más ancho otra vez: vuelven del historial.
+        t.resize(10, 3);
+        assert_eq!(t.snapshot_text(), "2222\n3333\n4444");
+        assert_eq!(history_text(&t), ["1111"]);
+    }
+
+    #[test]
+    fn taller_window_pulls_history_down() {
+        let mut t = term(10, 2, "a\r\nb\r\nc");
+        t.resize(10, 3);
+        assert_eq!(t.snapshot_text(), "a\nb\nc");
+        assert_eq!(pos(&t), (2, 1));
+    }
+
+    #[test]
+    fn reflow_while_in_alt_screen_keeps_main_screen() {
+        let mut t = term(8, 3, "abcdefgh\r\n$ \x1b[?1049h\x1b[Hvim");
+        t.resize(4, 3);
+        assert_eq!(t.snapshot_text(), "vim");
+        t.advance(b"\x1b[?1049l");
+        assert!(all_text(&t).contains("abcd\nefgh"));
     }
 }

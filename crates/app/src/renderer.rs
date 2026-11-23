@@ -282,8 +282,12 @@ impl Renderer {
     }
 
     /// Actualiza una fila de la copia local (se llama con el bloqueo tomado).
+    /// Las filas del historial pueden ser más cortas: el resto queda en blanco.
     pub fn update_row(&mut self, i: usize, row: &[Cell]) {
-        self.rows[i].copy_from_slice(row);
+        let dst = &mut self.rows[i];
+        let n = row.len().min(dst.len());
+        dst[..n].copy_from_slice(&row[..n]);
+        dst[n..].fill(Cell::default());
     }
 
     /// Construye un frame y lo presenta en el siguiente drawable del layer.
