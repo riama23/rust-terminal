@@ -35,7 +35,8 @@ echo "→ Compilando (la primera vez tarda unos minutos)…"
 APP="$(scripts/bundle.sh release | tail -1)"
 NAME="$(basename "$APP")"
 
-DEST="/Applications"
+# RT_INSTALL_DIR permite instalar en otro sitio (útil para probar el script).
+DEST="${RT_INSTALL_DIR:-/Applications}"
 [[ -w "$DEST" ]] || DEST="$HOME/Applications"
 mkdir -p "$DEST"
 rm -rf "${DEST:?}/$NAME"

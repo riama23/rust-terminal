@@ -35,13 +35,8 @@ mod tests {
             raw.push(0); // sin filtro
             for px in row.chunks(4) {
                 let a = px[3] as u32;
-                let un = |c: u8| {
-                    if a == 0 {
-                        0
-                    } else {
-                        ((c as u32 * 255 + a / 2) / a).min(255) as u8
-                    }
-                };
+                let un =
+                    |c: u8| ((c as u32 * 255 + a / 2).checked_div(a).unwrap_or(0)).min(255) as u8;
                 raw.extend_from_slice(&[un(px[2]), un(px[1]), un(px[0]), px[3]]);
             }
         }
