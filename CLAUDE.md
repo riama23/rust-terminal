@@ -4,7 +4,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Estado del proyecto
 
-Crate binario `rust-terminal` (Rust edition 2024). Todavía solo contiene el `src/main.rs` por defecto y no tiene dependencias. El diseño de abajo está acordado con el usuario; los temas de "Abierto" no se deciden sin preguntar.
+Workspace de Rust (edition 2024) con dos crates. Sus nombres son provisionales hasta que se decida el nombre del producto:
+
+- `crates/core` → `rust-terminal-core`: PTY (`pty`), cuadrícula (`grid`) y estado más parser `vte` (`term`). No puede depender de nada de interfaz ni de macOS más allá de POSIX.
+- `crates/app` → `rust-terminal`: el binario. En M1 es solo una prueba de humo sin interfaz; en M2 pasa a ser la app de AppKit y Metal.
+
+El diseño de abajo está acordado con el usuario; los temas de "Abierto" no se deciden sin preguntar.
+
+**Hoja de ruta de la v1:**
+- **M1, hecho:** núcleo con PTY, `vte` y cuadrícula.
+- **M2:** ventana con AppKit, Metal y Core Text; teclado, redimensionado y pantalla alternativa.
+- **M3:** hilos, `CADisplayLink` y benchmarks.
+- **M4:** scrollback y bloques con OSC 133 y zsh.
+- **M5:** pestañas y paneles.
+- **M6:** DEC 2026, Kitty keyboard, OSC 8 y 52, y notificaciones.
+- **M7:** configuración TOML.
+
+**Pendiente en el núcleo:**
+- Todos los caracteres ocupan 1 celda; los anchos (CJK y emoji) se tratan en M2.
+- Los CSI con intermedios, incluidos los modos privados `CSI ?`, se ignoran.
+- ED 3 se ignora hasta que exista el scrollback.
+- macOS no acepta `O_CLOEXEC` en `posix_openpt`, así que se pone después con `fcntl`. Con varias sesiones (M5), un `fork` concurrente podría heredar el maestro de otra; hay que revisarlo entonces.
 
 ## Qué es
 
@@ -23,7 +43,7 @@ Un **emulador de terminal para macOS** escrito en Rust (no una shell: por dentro
 ## Arquitectura acordada
 
 - **Parser:** crate `vte`. La **cuadrícula, el estado y el scrollback son propios**, porque es donde se deciden la memoria, los bloques y la futura API para agentes. No usar `alacritty_terminal`.
-- **Stack nativo, solo para macOS:** AppKit mediante `objc2`, Metal sobre `CAMetalLayer`, Core Text para las fuentes. El núcleo (parser y estado) se mantiene separado del renderizado.
+- **Stack nativo, solo para macOS:** AppKit mediante `objc2`, Metal sobre `CAMetalLayer`, Core Text para las fuentes. Solo hay Command Line Tools, sin Xcode completo, así que los shaders MSL se compilan en runtime con `newLibraryWithSource`, no con `xcrun metal`. El núcleo (parser y estado) se mantiene separado del renderizado.
 - **Hilos:** uno de lectura y parseo de la PTY por sesión, y uno de renderizado por ventana sincronizado con `CADisplayLink`. Sin `tokio`. El lector parsea en lotes y suelta el bloqueo del estado en cada frame. Solo se pide un frame cuando algo cambia.
 - **Bloques:** cada comando, su salida y su código de salida se obtienen de las marcas OSC 133. El modelo de datos se diseña pensando en exponerlo a agentes en la v2.
 - **Integración con la shell:** inyección automática para zsh (mediante `ZDOTDIR`, respetando la configuración del usuario), con opción para desactivarla. Si no llegan las marcas, la terminal funciona sin bloques: **nunca se intenta adivinar los límites de un comando a partir del texto**.
@@ -52,7 +72,7 @@ Un **emulador de terminal para macOS** escrito en Rust (no una shell: por dentro
 
 - Compilar: `cargo build`
 - Ejecutar: `cargo run`
-- Tests: `cargo test` · un solo test: `cargo test <nombre_del_test>`
+- Tests: `cargo test` · un crate: `cargo test -p rust-terminal-core` · un solo test: `cargo test <nombre_del_test>`. Los tests de `crates/core/tests/pty.rs` lanzan procesos reales (`/bin/sh`) en una PTY.
 - Lint: `cargo clippy --all-targets`
 - Formato: `cargo fmt` (comprobar sin modificar: `cargo fmt --check`)
 
