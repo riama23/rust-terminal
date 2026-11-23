@@ -8,6 +8,7 @@ mod agent_ui;
 mod config;
 mod container;
 mod font;
+mod hotkey;
 mod icon;
 mod input;
 mod notify;
@@ -398,6 +399,8 @@ fn open_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
         unsafe { view.displayLinkWithTarget_selector(target, sel!(tick:)) }
     });
     view.start(waker.clone());
+    // ⌃⌥N: «Nuevo agente…» desde cualquier aplicación.
+    hotkey::register_new_agent(waker.clone());
     // Ayuda de verificación: `RT_OPEN_SHEET=1` abre el formulario de nuevo agente.
     if std::env::var_os("RT_OPEN_SHEET").is_some() {
         view.new_agent_sheet();

@@ -4,6 +4,7 @@
 //! pública no tiene llamadores.
 #![allow(dead_code)]
 
+pub mod alerts;
 pub mod broker;
 pub mod http;
 pub mod hub;

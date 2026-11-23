@@ -72,6 +72,24 @@ pub struct PermissionRequest {
     pub suggestions: Value,
 }
 
+impl PermissionRequest {
+    /// Lo que se aprueba, en una línea: la orden de `Bash`, el archivo o el
+    /// resto de campos.
+    pub fn detail(&self) -> String {
+        if let Some(c) = self.tool_input.get("command").and_then(Value::as_str) {
+            return c.to_owned();
+        }
+        if let Some(p) = self.tool_input.get("file_path").and_then(Value::as_str) {
+            return p.to_owned();
+        }
+        if self.tool_input.is_null() {
+            String::new()
+        } else {
+            self.tool_input.to_string()
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum BrokerEvent {
     Hook {

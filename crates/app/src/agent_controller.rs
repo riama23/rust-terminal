@@ -13,9 +13,12 @@ use std::time::Duration;
 
 use objc2::rc::{Retained, Weak};
 use objc2::{MainThreadOnly, Message, sel};
-use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSTextField};
+use objc2_app_kit::{
+    NSAlert, NSAlertFirstButtonReturn, NSApplication, NSMenu, NSMenuItem, NSStatusItem, NSTextField,
+};
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
+use crate::agent::alerts::Action;
 use crate::agent::broker::{AgentKey, Broker, BrokerEvent, Decision, PermissionRequest};
 use crate::agent::hub::Hub;
 use crate::agent::launch::{self, LaunchSpec};
@@ -52,6 +55,12 @@ struct Inner {
     /// Dentro de `refresh_agent_ui`: tocar el contenedor recoloca la terminal,
     /// que vuelve a pedir un refresco. Sin esta guarda, recursión infinita.
     refreshing: bool,
+    /// Icono de la barra de menús (existe mientras haya agentes).
+    status_item: Option<Retained<NSStatusItem>>,
+    /// Lo último que se pintó en el menú, para no reconstruirlo sin cambios.
+    status_signature: Vec<String>,
+    /// Último número puesto en el badge del Dock.
+    badge: usize,
 }
 
 fn status_color(status: &Status) -> [u8; 3] {
@@ -110,6 +119,7 @@ impl TerminalView {
         let waker = self
             .waker_arc()
             .ok_or("La ventana aún no está lista.".to_owned())?;
+        crate::notify::install_agent_support(waker.clone());
         let state = self.agents();
 
         // Broker y carpeta de archivos, la primera vez.
@@ -236,12 +246,19 @@ impl TerminalView {
             let inner = self.agents().inner.borrow();
             std::mem::take(&mut *inner.queue.lock().unwrap())
         };
+        let active = NSApplication::sharedApplication(self.mtm()).isActive();
         let mut changed = false;
+        let mut alerts = Vec::new();
         {
             let mut inner = self.agents().inner.borrow_mut();
             for event in &events {
-                changed |= inner.hub.apply(event);
+                let (c, alert) = inner.hub.apply_with_alert(event, active);
+                changed |= c;
+                alerts.extend(alert);
             }
+        }
+        for alert in &alerts {
+            crate::notify::notify_agent(alert);
         }
         if changed {
             self.refresh_agent_ui();
@@ -258,8 +275,149 @@ impl TerminalView {
         }
         self.refresh_agent_ui_inner();
         state.inner.borrow_mut().refreshing = false;
+        self.update_dock_and_menu_bar();
         self.snapshot_agent_ui();
         self.auto_decide_for_tests();
+    }
+
+    /// Badge del Dock (sesiones que necesitan al usuario, no salida sin leer)
+    /// e icono de la barra de menús con la lista de agentes.
+    fn update_dock_and_menu_bar(&self) {
+        let state = self.agents();
+        let (attention, total, rows) = {
+            let inner = state.inner.borrow();
+            let rows: Vec<(String, String)> = inner
+                .hub
+                .sessions()
+                .iter()
+                .map(|s| {
+                    (
+                        s.key.clone(),
+                        format!("{} {} — {}", s.status.icon(), s.title, s.status.label()),
+                    )
+                })
+                .collect();
+            (inner.hub.needing_attention(), rows.len(), rows)
+        };
+        let mtm = self.mtm();
+
+        // Dock.
+        if std::mem::replace(&mut state.inner.borrow_mut().badge, attention) != attention {
+            let tile = NSApplication::sharedApplication(mtm).dockTile();
+            let label = (attention > 0).then(|| NSString::from_str(&attention.to_string()));
+            tile.setBadgeLabel(label.as_deref());
+        }
+
+        // Barra de menús: solo mientras haya agentes.
+        if total == 0 {
+            if let Some(item) = state.inner.borrow_mut().status_item.take() {
+                objc2_app_kit::NSStatusBar::systemStatusBar().removeStatusItem(&item);
+            }
+            state.inner.borrow_mut().status_signature.clear();
+            return;
+        }
+        let title = if attention > 0 {
+            format!("! {attention}")
+        } else {
+            format!("◐ {total}")
+        };
+        let mut signature: Vec<String> = rows.iter().map(|(k, t)| format!("{k}\u{1}{t}")).collect();
+        signature.push(title.clone());
+        if state.inner.borrow().status_signature == signature
+            && state.inner.borrow().status_item.is_some()
+        {
+            return;
+        }
+        let item = state.inner.borrow().status_item.clone().unwrap_or_else(|| {
+            objc2_app_kit::NSStatusBar::systemStatusBar()
+                .statusItemWithLength(objc2_app_kit::NSVariableStatusItemLength)
+        });
+        if let Some(button) = item.button(mtm) {
+            button.setTitle(&NSString::from_str(&title));
+        }
+        let menu = NSMenu::new(mtm);
+        for (key, text) in &rows {
+            let entry = self.status_menu_item(text, sel!(focusAgentFromMenu:), "");
+            // SAFETY: la clave es una cadena; el menú retiene el objeto.
+            unsafe { entry.setRepresentedObject(Some(&NSString::from_str(key))) };
+            menu.addItem(&entry);
+        }
+        menu.addItem(&NSMenuItem::separatorItem(mtm));
+        let new_agent = self.status_menu_item("Nuevo agente…  (⌃⌥N)", sel!(newAgent:), "");
+        menu.addItem(&new_agent);
+        item.setMenu(Some(&menu));
+        let mut inner = state.inner.borrow_mut();
+        inner.status_item = Some(item);
+        inner.status_signature = signature;
+    }
+
+    fn status_menu_item(
+        &self,
+        title: &str,
+        action: objc2::runtime::Sel,
+        key: &str,
+    ) -> Retained<NSMenuItem> {
+        // SAFETY: título, acción y atajo válidos; el destino es esta vista.
+        let item = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(self.mtm()),
+                &NSString::from_str(title),
+                Some(action),
+                &NSString::from_str(key),
+            )
+        };
+        // SAFETY: la vista implementa la acción y vive más que el menú.
+        unsafe { item.setTarget(Some(self)) };
+        item
+    }
+
+    /// Respuestas a notificaciones (hilo principal).
+    pub fn notification_responses(&self) {
+        for response in crate::notify::take_responses() {
+            match response.action {
+                Action::Open => self.focus_agent_and_activate(&response.agent),
+                Action::AllowOnce | Action::Deny(_) => {
+                    let decision = match response.action {
+                        Action::Deny(d) => d,
+                        _ => Decision::Allow,
+                    };
+                    // Solo la petición concreta de la notificación: una vieja no
+                    // puede contestar otra distinta.
+                    let req = response.request_id.and_then(|id| {
+                        self.agents()
+                            .inner
+                            .borrow()
+                            .hub
+                            .pending_request(&response.agent, id)
+                            .cloned()
+                    });
+                    if let Some(req) = req {
+                        self.decide(&req, decision);
+                    }
+                }
+            }
+        }
+    }
+
+    /// ⌃⌥N desde otra aplicación: trae la ventana al frente y abre el formulario.
+    pub fn global_new_agent(&self) {
+        #[allow(deprecated)]
+        NSApplication::sharedApplication(self.mtm()).activateIgnoringOtherApps(true);
+        if let Some(window) = self.window() {
+            window.makeKeyAndOrderFront(None);
+        }
+        self.new_agent_sheet();
+    }
+
+    /// Lleva la app y el panel del agente al frente.
+    pub fn focus_agent_and_activate(&self, key: &str) {
+        let mtm = self.mtm();
+        #[allow(deprecated)]
+        NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+        if let Some(window) = self.window() {
+            window.makeKeyAndOrderFront(None);
+        }
+        self.focus_agent(key);
     }
 
     /// `RT_AUTO_DECIDE=allow|deny`: contesta solo la petición pendiente, por la
@@ -296,6 +454,35 @@ impl TerminalView {
         let dir = PathBuf::from(dir);
         let _ = std::fs::create_dir_all(&dir);
         let inner = self.agents().inner.borrow();
+        // Lo que hay puesto en el Dock y en la barra de menús, leído de AppKit.
+        let mtm = self.mtm();
+        let tile = NSApplication::sharedApplication(mtm).dockTile();
+        let title = inner
+            .status_item
+            .as_ref()
+            .and_then(|i| i.button(mtm))
+            .map(|b| b.title().to_string())
+            .unwrap_or_default();
+        let menu = inner
+            .status_item
+            .as_ref()
+            .and_then(|i| i.menu(mtm))
+            .map(|m| {
+                m.itemArray()
+                    .iter()
+                    .map(|i| i.title().to_string())
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            })
+            .unwrap_or_default();
+        let badge = tile.badgeLabel().map(|l| l.to_string()).unwrap_or_default();
+        let _ = std::fs::write(
+            dir.join("status.txt"),
+            format!(
+                "dock_badge={badge}\nstatus_title={title}\nmenu={menu}\nhotkey={}\n",
+                crate::hotkey::status_text().unwrap_or_default()
+            ),
+        );
         if inner.sidebar_shown
             && let Some(s) = &inner.sidebar
         {
@@ -338,7 +525,7 @@ impl TerminalView {
         match pending {
             Some(req) => {
                 let bar = self.ensure_bar();
-                let detail = detail_of(&req);
+                let detail = req.detail();
                 let can_always = rules::rule_for(&req.tool_name, &req.tool_input).is_some();
                 bar.set_request(&req.tool_name, &detail, can_always);
                 if !std::mem::replace(&mut state.inner.borrow_mut().bar_shown, true) {
@@ -516,21 +703,6 @@ impl TerminalView {
     }
 }
 
-/// Lo que se aprueba, en una línea: la orden de `Bash` o el resto de campos.
-fn detail_of(req: &PermissionRequest) -> String {
-    if let Some(command) = req.tool_input.get("command").and_then(|v| v.as_str()) {
-        return command.to_owned();
-    }
-    if let Some(path) = req.tool_input.get("file_path").and_then(|v| v.as_str()) {
-        return path.to_owned();
-    }
-    if req.tool_input.is_null() {
-        String::new()
-    } else {
-        req.tool_input.to_string()
-    }
-}
-
 /// `RT_DUMP_PANE=/ruta`: vuelca cada 2 s el texto visible del panel del agente
 /// (verificación sin pantalla). El hilo termina cuando el panel se cierra.
 fn dump_pane_text(session: Arc<crate::session::Session>, path: PathBuf) {
@@ -647,10 +819,10 @@ mod tests {
             cwd: "/".into(),
             suggestions: Value::Null,
         };
-        assert_eq!(detail_of(&mk(json!({"command": "ls -la"}))), "ls -la");
-        assert_eq!(detail_of(&mk(json!({"file_path": "/a/b.rs"}))), "/a/b.rs");
-        assert_eq!(detail_of(&mk(json!({"q": 1}))), r#"{"q":1}"#);
-        assert_eq!(detail_of(&mk(Value::Null)), "");
+        assert_eq!(mk(json!({"command": "ls -la"})).detail(), "ls -la");
+        assert_eq!(mk(json!({"file_path": "/a/b.rs"})).detail(), "/a/b.rs");
+        assert_eq!(mk(json!({"q": 1})).detail(), r#"{"q":1}"#);
+        assert_eq!(mk(Value::Null).detail(), "");
     }
 
     #[test]

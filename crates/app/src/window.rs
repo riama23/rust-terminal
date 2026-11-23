@@ -181,6 +181,29 @@ define_class!(
             }
         }
 
+        /// ⌃⌥N: abre el formulario de nuevo agente desde cualquier app.
+        #[unsafe(method(globalNewAgent))]
+        fn global_new_agent(&self) {
+            let mtm = MainThreadMarker::new().expect("hilo principal");
+            for window in NSApplication::sharedApplication(mtm).windows().iter() {
+                if let Some(view) = crate::container::terminal_view(&window) {
+                    view.global_new_agent();
+                    break;
+                }
+            }
+        }
+
+        /// El usuario respondió a una notificación de un agente (hilo principal).
+        #[unsafe(method(notificationResponses))]
+        fn notification_responses(&self) {
+            let mtm = MainThreadMarker::new().expect("hilo principal");
+            for window in NSApplication::sharedApplication(mtm).windows().iter() {
+                if let Some(view) = crate::container::terminal_view(&window) {
+                    view.notification_responses();
+                }
+            }
+        }
+
         /// Hay eventos del broker de agentes (hilo principal).
         #[unsafe(method(agentEvents))]
         fn agent_events(&self) {

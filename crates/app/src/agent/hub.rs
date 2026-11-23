@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 
+use super::alerts::{self, Alert, Snapshot};
 use super::broker::{AgentKey, BrokerEvent, PermissionRequest};
 use super::model::{self, AgentSession};
 use crate::workspace::PaneId;
@@ -59,6 +60,35 @@ impl Hub {
             model::sort(&mut self.sessions);
         }
         changed
+    }
+
+    /// Como [`Hub::apply`], y además devuelve el aviso del sistema que toca (si
+    /// la app está inactiva).
+    pub fn apply_with_alert(
+        &mut self,
+        event: &BrokerEvent,
+        app_active: bool,
+    ) -> (bool, Option<Alert>) {
+        let Some(session) = self.sessions.iter_mut().find(|s| s.key == event.agent()) else {
+            return (false, None);
+        };
+        let before = Snapshot::of(session);
+        let changed = session.apply(event);
+        let alert = alerts::alert_for(&before, session, app_active);
+        if changed {
+            model::sort(&mut self.sessions);
+        }
+        (changed, alert)
+    }
+
+    /// La petición pendiente `id` del agente `key`, si sigue siéndolo.
+    pub fn pending_request(&self, key: &str, id: u64) -> Option<&PermissionRequest> {
+        self.sessions
+            .iter()
+            .find(|s| s.key == key)?
+            .pending
+            .as_ref()
+            .filter(|p| p.id == id)
     }
 
     /// El usuario contestó la petición `id` desde la interfaz.
@@ -167,5 +197,28 @@ mod tests {
         });
         assert!(h.pending_for_pane(10).is_none());
         assert_eq!(h.needing_attention(), 0);
+    }
+
+    #[test]
+    fn el_hub_devuelve_el_aviso_solo_con_la_app_inactiva() {
+        let mut h = hub();
+        let (changed, alert) = h.apply_with_alert(&perm("a", 1), true);
+        assert!(changed && alert.is_none());
+        let mut h = hub();
+        let (_, alert) = h.apply_with_alert(&perm("a", 1), false);
+        assert_eq!(alert.unwrap().agent, "a");
+        let (changed, alert) = h.apply_with_alert(&perm("zzz", 2), false);
+        assert!(!changed && alert.is_none());
+    }
+
+    #[test]
+    fn una_notificacion_vieja_no_contesta_otra_peticion() {
+        let mut h = hub();
+        h.apply(&perm("a", 1));
+        assert!(h.pending_request("a", 1).is_some());
+        assert!(h.pending_request("a", 2).is_none(), "id distinto");
+        assert!(h.pending_request("b", 1).is_none(), "otro agente");
+        h.resolved("a", 1);
+        assert!(h.pending_request("a", 1).is_none(), "ya contestada");
     }
 }

@@ -136,6 +136,19 @@ define_class!(
             self.deny_with_reason();
         }
 
+        /// Elegir un agente en el menú de la barra de menús.
+        #[unsafe(method(focusAgentFromMenu:))]
+        fn focus_agent_from_menu(&self, sender: Option<&AnyObject>) {
+            let key = sender
+                .and_then(|s| s.downcast_ref::<NSMenuItem>())
+                .and_then(|i| i.representedObject())
+                .and_then(|o| o.downcast::<NSString>().ok())
+                .map(|s| s.to_string());
+            if let Some(key) = key {
+                self.focus_agent_and_activate(&key);
+            }
+        }
+
         #[unsafe(method(newAgent:))]
         fn new_agent_action(&self, _sender: Option<&AnyObject>) {
             self.new_agent_sheet();
