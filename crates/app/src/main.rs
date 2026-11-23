@@ -6,6 +6,7 @@ mod input;
 mod palette;
 mod renderer;
 mod session;
+mod shell;
 mod view;
 
 use std::cell::OnceCell;
@@ -172,10 +173,15 @@ fn open_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
     );
 
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_owned());
+    let mut env: Vec<(String, String)> = utf8_locale_env()
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v))
+        .collect();
+    env.extend(shell::integration_env(&shell));
     let pty = Pty::spawn(
         &shell,
         &["-l"],
-        utf8_locale_env(),
+        env,
         INITIAL_COLS as u16,
         INITIAL_ROWS as u16,
     )
