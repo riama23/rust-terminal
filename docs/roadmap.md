@@ -81,7 +81,7 @@ Es el núcleo de la tesis del producto.
 - **Lanzar agente (⌘N simple):** sheet con tarea, aislamiento (`-w <name>` o carpeta actual), modo de permisos (`plan`, `default`, `acceptEdits`) y modelo. Muestra en solo lectura el comando exacto que se ejecutará (principio "no magic"). El agente se abre en un panel propio, siempre en Classic.
 - **Sidebar de sesiones:** solo sesiones lanzadas por la app. Orden: *Necesita tu atención* primero, luego *Trabajando*, *Error*, *Plan listo*, *Terminado*.
 - **Attention bar:** muestra el comando exacto pendiente y ofrece *Permitir una vez* (⌘↵) y *Denegar…* (⌘⌫). *Siempre permitir* escribe en `.claude/settings.local.json` con la regla visible antes de guardar.
-- **Denegar con motivo:** el `message` del deny llega a Claude, pero como resultado de herramienta y no como mensaje del usuario (spike). **Abierto:** si basta como motivo del rechazo o si el texto también debe teclearse en la sesión. Se decide al probarlo con una respuesta real.
+- **Denegar con motivo:** el `message` del deny llega a Claude, pero como resultado de herramienta y no como mensaje del usuario (spike). **Decidido (2026-11-23):** solo `message`, sin teclear nada en la sesión; si Claude no lo sigue al pie de la letra, el usuario le escribe directamente.
 - **Política de matching:** sin `tool_use_id`, y sin poder casar por hash de `tool_input` (otros hooks lo reescriben), se casa por `session_id` y orden de llegada. Siempre se muestra el `tool_input` del `PermissionRequest`, que es lo que se aprueba. Si hay dos peticiones simultáneas de la misma sesión, o ninguna encaja con una sesión conocida, no se devuelve decisión y gana el prompt de Claude Code. **Nunca se permite a ciegas.**
 - **Inicio de sesión:** `SessionStart` no llega por HTTP, así que se usa un hook `command` que avise al broker.
 - **Tokens de color** del spec en `palette.rs`, solo Dusk. La paleta ANSI no cambia.
@@ -239,7 +239,7 @@ Respuestas a las tres rondas de preguntas, todas aceptadas.
 
 **Agentes**
 9. Matching sin `tool_use_id`: `session_id` y orden de llegada (el hash de `tool_input` se descartó tras el spike). Ante ambigüedad, no se decide y gana el prompt de Claude Code.
-10. Denegar con motivo: campo `message`. **Reabierta tras el spike:** llega a Claude como resultado de herramienta; falta decidir si hace falta además teclearlo en la sesión.
+10. Denegar con motivo: campo `message` y nada más. Tras el spike se reabrió (llega a Claude como resultado de herramienta, no como mensaje del usuario) y se confirmó así.
 11. Un agente es un panel con `claude --settings …`, en pestaña propia y siempre en Classic.
 12. Sesiones externas y reanudación tras reinicio, diferidas.
 13. Rama: se acepta `worktree-<name>` de Claude Code, y el spec se corrige en consecuencia.
