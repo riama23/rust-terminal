@@ -48,8 +48,9 @@ El diseño de abajo está acordado con el usuario; los temas de "Abierto" no se 
   - la campana hace rebotar el icono del Dock.
 - **M7, implementado y en verificación manual** (lista en `docs/verificacion-m7.md`): configuración TOML con recarga en caliente. Cubre fuente, colores, margen, shell, historial, portapapeles, notificaciones y campana. El teclado todavía no es configurable.
 - **Pendiente para cerrar la v1:**
-  - la comparación de rendimiento con Ghostty y Alacritty;
-  - el criterio de terminada: sustituir a Warp durante una semana.
+  - el criterio de terminada: sustituir a Warp durante una semana (`docs/semana-de-prueba.md`);
+  - medir la latencia con Typometer (`scripts/latency.sh`);
+  - cerrar la distancia con Ghostty en throughput (`docs/rendimiento.md`).
 - **Pospuesto:** comparación con Ghostty y Alacritty. Hay que instalarlos, y Java para Typometer.
 
 **Modelo de hilos (`session.rs` y `window.rs`):**
@@ -75,11 +76,13 @@ El diseño de abajo está acordado con el usuario; los temas de "Abierto" no se 
 - Los tests de `shell.rs` usan una zsh real con un `HOME` temporal; no deben cargar la configuración del usuario.
 
 **Pendiente en el núcleo:**
-- Los caracteres de ancho 0 (combinantes, ZWJ) se descartan.
+- Los caracteres de ancho 0 (combinantes, ZWJ, selectores) se unen a la celda anterior como grupo, en una tabla por cuadrícula con códigos de uso privado. Las columnas siguen a `wcwidth`: una secuencia ZWJ se ve como varios emoji.
 - Solo existe G0, con ASCII o gráficos de línea DEC. SO/SI no tienen efecto.
 - ED 3 se ignora hasta que exista el scrollback.
 - macOS no acepta `O_CLOEXEC` en `posix_openpt`, así que se pone después con `fcntl`. Para evitar que otro `fork` herede el maestro en ese hueco, **todas las sesiones se lanzan desde el hilo principal**; hay que mantenerlo así.
-- **Throughput de `bench-core`:** 106–179 MiB/s. Con el historial, el texto plano bajó de unos 148 a unos 106 MiB/s, porque se compactan las filas y se reserva memoria en cada línea. Está pendiente de optimizar.
+- **Throughput de `bench-core`:** 91–179 MiB/s según el caso. La comparación con Ghostty y Alacritty está en `docs/rendimiento.md`.
+  - Las filas de pantalla van en `Box`, para que desplazar una región mueva punteros.
+  - Cada fila guarda `used`, una cota de la parte con contenido. Invariante: más allá de `used`, todo es `Cell::default()`. Lo comprueba un test.
 
 **Eventos del núcleo a la app:**
 - El núcleo deja en `Term::take_events` el portapapeles (OSC 52) y las notificaciones. Nunca actúa por su cuenta.
@@ -87,12 +90,7 @@ El diseño de abajo está acordado con el usuario; los temas de "Abierto" no se 
 - La vista decide qué hacer según si la ventana está activa.
 
 **Pendiente en la app:**
-- El texto en composición no se dibuja: tras `´` no aparece nada hasta la segunda tecla.
-- **Riesgo de bloqueo con pegados grandes:**
-  - El hilo principal mantiene tomado `writer` mientras escribe en la PTY, y esa escritura puede bloquearse.
-  - Si en ese momento la aplicación manda una consulta, el lector espera al mismo mutex para responder y deja de leer.
-  - El hijo se queda bloqueado al escribir y todo se atasca.
-  - Es poco probable; se resolverá con una cola de escritura.
+- **Escrituras a la PTY:** van por una cola a un hilo escritor por sesión (trozos pequeños tras `poll`). Así un pegado enorme no bloquea ni la interfaz ni el lector. El tamaño y las consultas usan otro manejador.
 - Si `LANG` no está definida (app abierta desde el Finder), se le da a la shell un locale `<idioma del sistema>.UTF-8` o `en_US.UTF-8`.
 
 ## Qué es
@@ -152,7 +150,9 @@ Un **emulador de terminal para macOS** escrito en Rust (no una shell: por dentro
 - **App empaquetada:** `scripts/bundle.sh [debug|release]` genera `target/<perfil>/rust-terminal.app`, con firma ad hoc y nombre provisional.
   - Para probarla con logs: `open -n --stderr /tmp/rt.log --env RT_FRAME_STATS=1 target/debug/rust-terminal.app`.
 - **Benchmarks:**
-  - `scripts/bench.sh core` es el microbenchmark del núcleo.
+  - `scripts/compare.sh` compara con Ghostty y Alacritty usando vtebench. `RT_COMPARE` elige qué terminales medir.
+  - `scripts/latency.sh` abre Typometer para medir la latencia a mano.
+  - `scripts/bench.sh core [filtro]` es el microbenchmark del núcleo.
   - `scripts/bench.sh vtebench` hay que ejecutarlo dentro de la terminal que se quiere medir. Usa `vtebench` fijado a un commit.
   - Los resultados se guardan en `target/bench/`.
 - **Render a imagen** para revisarlo a ojo: `RT_RENDER_DUMP=/tmp/render.bmp cargo test -p rust-terminal dump -- --ignored`.

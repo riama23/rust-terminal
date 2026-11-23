@@ -3,6 +3,7 @@
 #
 #   scripts/compare.sh            # 5 s por benchmark y terminal (~4 minutos)
 #   RT_BENCH_SECS=3 scripts/compare.sh
+#   RT_COMPARE="rust-terminal ghostty" scripts/compare.sh   # solo esas
 #
 # Abre una ventana de cada terminal, una tras otra, con el mismo tamaño
 # (100×30) y la misma fuente (13 pt). No toques el teclado mientras corre y
@@ -24,17 +25,21 @@ APP="$PWD/$(scripts/bundle.sh release | tail -1)"
 ALACRITTY="$(command -v alacritty || echo "$HOME/.cargo/bin/alacritty")"
 
 run() { echo "$VTEBENCH -b $BENCHMARKS --max-secs $SECS --silent --dat $OUT/$1.dat"; }
+WANT="${RT_COMPARE:-rust-terminal ghostty alacritty}"
+want() { [[ " $WANT " == *" $1 "* ]]; }
 
-echo "→ rust-terminal…"
-open -nW "$APP" --args -e /bin/sh -c "$(run rust-terminal)"
+if want rust-terminal; then
+    echo "→ rust-terminal…"
+    open -nW "$APP" --args -e /bin/sh -c "$(run rust-terminal)"
+fi
 
-if [[ -d /Applications/Ghostty.app ]]; then
+if want ghostty && [[ -d /Applications/Ghostty.app ]]; then
     echo "→ Ghostty…"
     open -nW -a Ghostty --args --quit-after-last-window-closed=true --wait-after-command=false \
         --window-width=100 --window-height=30 --font-size=13 -e /bin/sh -c "$(run ghostty)"
 fi
 
-if [[ -x "$ALACRITTY" ]]; then
+if want alacritty && [[ -x "$ALACRITTY" ]]; then
     echo "→ Alacritty…"
     "$ALACRITTY" -o window.dimensions.columns=100 -o window.dimensions.lines=30 -o font.size=13 \
         -e /bin/sh -c "$(run alacritty)"

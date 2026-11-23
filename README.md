@@ -103,7 +103,6 @@ long_command_seconds = 30   # 0: no avisar
 
 - Solo hay una ventana; las pestañas no se pueden reordenar arrastrándolas.
 - Los bloques solo funcionan con zsh.
-- Mientras se escribe una tecla muerta no se ve nada hasta pulsar la segunda tecla.
 - El teclado no es configurable todavía: la Option izquierda siempre funciona como Meta.
 
 ## Solución de problemas
@@ -120,8 +119,11 @@ open -n --stderr /tmp/rt.log --env RT_LOG_UNHANDLED=1 --env RT_FRAME_STATS=1 tar
 ## Rendimiento
 
 ```sh
+scripts/compare.sh          # throughput frente a Ghostty y Alacritty (vtebench)
+scripts/latency.sh          # latencia de teclado con Typometer (manual)
 scripts/bench.sh core       # velocidad del intérprete de la terminal
-scripts/bench.sh vtebench   # ejecútalo dentro de la terminal que quieras medir
 ```
+
+Resultados y procedimiento en [docs/rendimiento.md](docs/rendimiento.md).
 
 Los resultados se guardan en `target/bench/`.
