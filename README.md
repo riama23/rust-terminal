@@ -24,21 +24,20 @@ Emulador de terminal para macOS escrito en Rust, pensado para trabajar con agent
 
 ## Instalación
 
-Clona el repositorio y genera la aplicación:
+En cada Mac donde quieras usarla:
 
 ```sh
-scripts/bundle.sh release
+git clone git@github.com:riama23/rust-terminal.git
+cd rust-terminal && scripts/install.sh
 ```
 
-Se crea `target/release/rust-terminal.app`. Puedes abrirla con doble clic o con:
+El script comprueba los requisitos, compila e instala `rust-terminal.app` en `/Applications` (o en `~/Applications` si no tienes permiso). Para actualizar, vuelve a ejecutar `scripts/install.sh`: trae los cambios con `git pull` y reinstala. La app solo lleva firma local (ad hoc) y no está notarizada, así que es para uso personal.
 
-```sh
-open target/release/rust-terminal.app
-```
+Para desarrollar: `cargo run`, o `scripts/bundle.sh` para generar el `.app` en `target/release/` sin instalarlo.
 
-Si quieres tenerla en el Launchpad y en Spotlight, cópiala a `/Applications`. La app solo lleva firma local (ad hoc) y no está notarizada, así que es para uso personal en tu propio Mac.
+## Informar de fallos
 
-Para desarrollar también puedes lanzarla directamente con `cargo run`.
+Pulsa **Cmd+Shift+I** (Ayuda → Informar de un fallo…) en el panel donde algo ha ido mal. Se abre una issue nueva en GitHub con un diagnóstico ya rellenado, que puedes revisar y editar antes de enviarla. Ver [docs/semana-de-prueba.md](docs/semana-de-prueba.md).
 
 ## Uso
 
@@ -53,6 +52,7 @@ La terminal abre tu shell (`$SHELL`, o `/bin/zsh` si no está definida) como she
 | Ir a la pestaña 1…9 | Cmd+1…9 |
 | Pestaña anterior / siguiente | Cmd+Shift+[ / Cmd+Shift+] |
 | Abrir un enlace | Cmd+clic |
+| Informar de un fallo | Cmd+Shift+I |
 | Copiar la selección | Cmd+C |
 | Copiar la salida del último comando | Cmd+Shift+C |
 | Pegar | Cmd+V |

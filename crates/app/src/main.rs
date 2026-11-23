@@ -3,6 +3,7 @@
 
 mod config;
 mod font;
+mod icon;
 mod input;
 mod notify;
 mod palette;

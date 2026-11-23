@@ -146,6 +146,9 @@ Un **emulador de terminal para macOS** escrito en Rust (no una shell: por dentro
 - Tests: `cargo test` · un crate: `cargo test -p rust-terminal-core` · un solo test: `cargo test <nombre_del_test>`. Los tests de `crates/core/tests/pty.rs` lanzan procesos reales (`/bin/sh`) en una PTY.
 - Lint: `cargo clippy --all-targets`
 - Formato: `cargo fmt` (comprobar sin modificar: `cargo fmt --check`)
+- **Instalar o actualizar en un Mac:** `scripts/install.sh`. Hace `git pull`, compila el `.app` e instala en `/Applications`.
+- **Icono:** `scripts/make-icon.sh` lo regenera desde `crates/app/src/icon.rs` (dibujo con Core Graphics en un test ignorado) a `crates/app/assets/AppIcon.icns`.
+- **Repositorio:** `github.com/riama23/rust-terminal` (privado). Los fallos se informan con Cmd+Shift+I (`report.rs`); la URL de las issues está en `report::NEW_ISSUE_URL`. Guía de la semana de prueba: `docs/semana-de-prueba.md`.
 - **App empaquetada:** `scripts/bundle.sh [debug|release]` genera `target/<perfil>/rust-terminal.app`, con firma ad hoc y nombre provisional.
   - Para probarla con logs: `open -n --stderr /tmp/rt.log --env RT_FRAME_STATS=1 target/debug/rust-terminal.app`.
 - **Benchmarks:**
