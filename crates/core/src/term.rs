@@ -6,7 +6,9 @@ use std::sync::OnceLock;
 use unicode_width::UnicodeWidthChar;
 use vte::{Params, Parser, Perform};
 
-use crate::grid::{Cell, Color, Flags, Grid, Point};
+use crate::block::{self, Block};
+use crate::grid::{Cell, Color, Flags, Grid, Line, Point};
+use crate::selection::{self, Selection, SelectionRange};
 
 /// Líneas de historial de la pantalla principal (límite inicial, pendiente de medir).
 pub const HISTORY_LIMIT: usize = 10_000;
@@ -91,10 +93,19 @@ struct Screen {
     /// Bytes que hay que devolver a la aplicación por la PTY.
     responses: Vec<u8>,
     bell: bool,
+    /// Al redimensionar con el cursor en el prompt, borrarlo para que la shell
+    /// lo redibuje limpio (ver `Term::resize`).
+    clear_prompt_on_resize: bool,
     /// Líneas que la vista está desplazada hacia el historial (0 = abajo del todo).
     display_offset: usize,
     /// La vista cambió entera (desplazamiento, reflow…) y hay que repintar todo.
     view_dirty: bool,
+    /// Bloques de comandos (OSC 133), del más antiguo al más reciente.
+    blocks: Vec<Block>,
+    next_block_id: u64,
+    /// Directorio de trabajo comunicado por OSC 7.
+    cwd: Option<String>,
+    selection: Option<Selection>,
 }
 
 pub struct Term {
@@ -114,6 +125,9 @@ impl Term {
     pub fn advance(&mut self, bytes: &[u8]) {
         let start = self.screen.grid.screen_start();
         self.parser.advance(&mut self.screen, bytes);
+        if self.screen.main_grid().first_line() > 0 {
+            self.screen.prune_evicted();
+        }
         let s = &mut self.screen;
         if s.display_offset > 0 {
             // Si se está mirando el historial, la vista no se mueve con la salida nueva.
@@ -124,6 +138,84 @@ impl Term {
             }
             s.display_offset = offset;
         }
+    }
+
+    /// Bloques de comandos (OSC 133), del más antiguo al más reciente.
+    pub fn blocks(&self) -> &[Block] {
+        &self.screen.blocks
+    }
+
+    /// Directorio actual según OSC 7.
+    pub fn cwd(&self) -> Option<&str> {
+        self.screen.cwd.as_deref()
+    }
+
+    /// Activa o desactiva el borrado del prompt al redimensionar.
+    pub fn set_clear_prompt_on_resize(&mut self, on: bool) {
+        self.screen.clear_prompt_on_resize = on;
+    }
+
+    /// Texto de la salida de un bloque terminado (sin el prompt siguiente).
+    pub fn block_output(&self, block: &Block) -> Option<String> {
+        let (start, end) = (block.output?, block.end?);
+        if (end.line, end.col) <= (start.line, start.col) {
+            return Some(String::new());
+        }
+        // El final es exclusivo: la última celda es la anterior a `end`.
+        let last = if end.col > 0 {
+            selection::point(end.line, end.col - 1)
+        } else {
+            selection::point(end.line - 1, self.screen.grid.cols() - 1)
+        };
+        let range = SelectionRange {
+            start: selection::point(start.line, start.col),
+            end: last,
+            block: false,
+        };
+        let mut text = selection::text_in_range(&self.screen.grid, range);
+        while text.ends_with('\n') {
+            text.pop();
+        }
+        Some(text)
+    }
+
+    /// Último bloque con la salida terminada.
+    pub fn last_finished_block(&self) -> Option<&Block> {
+        self.screen.blocks.iter().rev().find(|b| b.is_finished())
+    }
+
+    /// Línea absoluta de la fila `row` de la vista.
+    pub fn visible_line(&self, row: usize) -> Line {
+        self.screen.grid.screen_start() - self.screen.display_offset as Line + row as Line
+    }
+
+    /// Desplaza la vista para que `line` quede arriba (o lo más cerca posible).
+    pub fn scroll_to_line(&mut self, line: Line) {
+        let s = &mut self.screen;
+        let offset = s.grid.screen_start().saturating_sub(line) as usize;
+        let offset = offset.min(s.grid.history_len());
+        if offset != s.display_offset {
+            s.display_offset = offset;
+            s.view_dirty = true;
+        }
+    }
+
+    pub fn selection(&self) -> Option<Selection> {
+        self.screen.selection
+    }
+
+    pub fn set_selection(&mut self, selection: Option<Selection>) {
+        self.screen.selection = selection;
+    }
+
+    /// Rango normalizado de la selección actual.
+    pub fn selection_range(&self) -> Option<SelectionRange> {
+        self.screen.selection.map(|s| s.range(&self.screen.grid))
+    }
+
+    pub fn selection_text(&self) -> Option<String> {
+        let range = self.selection_range()?;
+        Some(selection::text_in_range(&self.screen.grid, range))
     }
 
     /// Líneas que la vista está desplazada hacia el historial.
@@ -234,6 +326,23 @@ impl Term {
             s.cursor.col = s.cursor.col.min(cols - 1);
             s.cursor.wrap_pending = false;
         } else {
+            // Si el cursor está en el prompt, la shell lo redibuja al recibir
+            // SIGWINCH: se borra desde la marca A para no dejar restos al reajustar.
+            if s.clear_prompt_on_resize
+                && let Some(b) = s.blocks.last().filter(|b| b.output.is_none())
+                && b.prompt.line >= s.grid.screen_start()
+            {
+                let row = (b.prompt.line - s.grid.screen_start()) as usize;
+                if row <= s.cursor.row {
+                    let total = s.grid.rows();
+                    s.grid.clear_rows(row, total, Cell::default());
+                    s.cursor = Cursor {
+                        row,
+                        col: 0,
+                        wrap_pending: false,
+                    };
+                }
+            }
             let start = s.grid.screen_start();
             let mut points = vec![Point {
                 line: start + s.cursor.row as u64,
@@ -247,7 +356,19 @@ impl Term {
                     pending: sv.cursor.wrap_pending,
                 });
             }
+            let fixed = points.len();
+            for b in &mut s.blocks {
+                points.extend(b.points_mut().map(|p| *p));
+            }
             s.grid.resize_reflow(cols, rows, &mut points);
+            let mut moved = points[fixed..].iter();
+            for b in &mut s.blocks {
+                for p in b.points_mut() {
+                    if let Some(np) = moved.next() {
+                        *p = *np;
+                    }
+                }
+            }
             let start = s.grid.screen_start();
             s.cursor.row = (points[0].line.saturating_sub(start) as usize).min(rows - 1);
             s.cursor.col = points[0].col.min(cols - 1);
@@ -263,6 +384,7 @@ impl Term {
         s.bottom = rows - 1;
         s.display_offset = s.display_offset.min(s.grid.history_len());
         s.view_dirty = true;
+        s.selection = None;
     }
 
     /// La pantalla como texto: una línea por fila, sin espacios finales y sin
@@ -390,8 +512,99 @@ impl Screen {
             title_changed: false,
             responses: Vec::new(),
             bell: false,
+            clear_prompt_on_resize: true,
             display_offset: 0,
             view_dirty: true,
+            blocks: Vec::new(),
+            next_block_id: 0,
+            cwd: None,
+            selection: None,
+        }
+    }
+
+    /// Posición del cursor como punto absoluto.
+    fn cursor_point(&self) -> Point {
+        Point {
+            line: self.grid.screen_start() + self.cursor.row as Line,
+            col: self.cursor.col,
+            pending: self.cursor.wrap_pending,
+        }
+    }
+
+    /// Marca de integración con la shell (OSC 133).
+    fn shell_mark(&mut self, params: &[&[u8]]) {
+        if self.modes.alt_screen {
+            return;
+        }
+        let here = self.cursor_point();
+        let kind = params.get(1).and_then(|p| p.first()).copied();
+        match kind {
+            Some(b'A') => {
+                match self.blocks.last_mut() {
+                    // Prompt sin comando (Enter vacío o prompt redibujado): se sustituye.
+                    Some(b) if b.output.is_none() => {
+                        self.blocks.pop();
+                    }
+                    // Comando que terminó sin marca D: se cierra sin código.
+                    Some(b) if !b.is_finished() => b.end = Some(here),
+                    _ => {}
+                }
+                self.next_block_id += 1;
+                self.blocks.push(Block {
+                    id: self.next_block_id,
+                    prompt: here,
+                    input: None,
+                    output: None,
+                    end: None,
+                    exit_code: None,
+                    command: None,
+                    cwd: self.cwd.clone(),
+                });
+            }
+            Some(b'B') => {
+                if let Some(b) = self.blocks.last_mut().filter(|b| b.output.is_none()) {
+                    b.input = Some(here);
+                }
+            }
+            Some(b'C') => {
+                if let Some(b) = self.blocks.last_mut().filter(|b| b.output.is_none()) {
+                    b.output = Some(here);
+                    b.command = params[2..].iter().find_map(|p| {
+                        std::str::from_utf8(p)
+                            .ok()?
+                            .strip_prefix("cmdline_url=")
+                            .map(block::percent_decode)
+                    });
+                }
+            }
+            Some(b'D') => {
+                if let Some(b) = self
+                    .blocks
+                    .last_mut()
+                    .filter(|b| b.output.is_some() && !b.is_finished())
+                {
+                    b.end = Some(here);
+                    b.exit_code = params
+                        .get(2)
+                        .and_then(|p| std::str::from_utf8(p).ok())
+                        .and_then(|p| p.parse().ok());
+                }
+            }
+            _ => log_unhandled(format_args!("OSC 133 {:?}", kind.map(char::from))),
+        }
+    }
+
+    /// Descarta lo que apunta a líneas que ya salieron del historial.
+    fn prune_evicted(&mut self) {
+        let first = self.main_grid().first_line();
+        // Los bloques sin terminar se conservan: aún esperan su marca D.
+        self.blocks
+            .retain(|b| b.end.is_none_or(|e| e.line >= first));
+        if self
+            .selection
+            .is_some_and(|s| s.anchor.line.min(s.head.line) < first)
+        {
+            self.selection = None;
         }
     }
 
@@ -842,6 +1055,16 @@ impl Perform for Screen {
             }
             // Título del icono: no aplica en macOS.
             Some(&b"1") => {}
+            Some(&b"133") => self.shell_mark(params),
+            Some(&b"7") => {
+                if let Some(path) = params
+                    .get(1)
+                    .and_then(|p| std::str::from_utf8(p).ok())
+                    .and_then(block::path_from_file_url)
+                {
+                    self.cwd = Some(path);
+                }
+            }
             Some(kind) => log_unhandled(format_args!("OSC {}", String::from_utf8_lossy(kind))),
             None => {}
         }
@@ -1486,5 +1709,129 @@ mod tests {
         assert_eq!(t.snapshot_text(), "vim");
         t.advance(b"\x1b[?1049l");
         assert!(all_text(&t).contains("abcd\nefgh"));
+    }
+
+    const A: &str = "\x1b]133;A\x07";
+    const B: &str = "\x1b]133;B\x07";
+
+    fn c(cmd: &str) -> String {
+        format!("\x1b]133;C;cmdline_url={}\x07", cmd.replace(' ', "%20"))
+    }
+
+    fn d(code: i32) -> String {
+        format!("\x1b]133;D;{code}\x07")
+    }
+
+    #[test]
+    fn blocks_from_shell_marks() {
+        let input = format!(
+            "{A}$ {B}echo hola\r\n{}hola\r\n{}{A}$ {B}false\r\n{}{}{A}$ {B}",
+            c("echo hola"),
+            d(0),
+            c("false"),
+            d(1)
+        );
+        let t = term(20, 10, &input);
+        let blocks = t.blocks();
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0].command.as_deref(), Some("echo hola"));
+        assert_eq!(blocks[0].exit_code, Some(0));
+        assert_eq!(t.block_output(&blocks[0]).as_deref(), Some("hola"));
+        assert_eq!(blocks[1].exit_code, Some(1));
+        assert_eq!(t.block_output(&blocks[1]).as_deref(), Some(""));
+        assert!(!blocks[2].is_finished());
+        assert_eq!(t.last_finished_block().unwrap().id, blocks[1].id);
+    }
+
+    #[test]
+    fn output_without_trailing_newline() {
+        let input = format!("{A}$ {B}printf foo\r\n{}foo{}{A}$ ", c("printf foo"), d(0));
+        let t = term(20, 5, &input);
+        assert_eq!(t.block_output(&t.blocks()[0]).as_deref(), Some("foo"));
+    }
+
+    #[test]
+    fn empty_enter_does_not_create_a_block() {
+        // Enter sin comando: no hay C ni D, solo otro A.
+        let input = format!("{A}$ {B}\r\n{A}$ {B}\r\n{A}$ {B}");
+        let t = term(20, 5, &input);
+        assert_eq!(t.blocks().len(), 1);
+        assert!(t.blocks()[0].exit_code.is_none());
+    }
+
+    #[test]
+    fn marks_are_ignored_in_alt_screen() {
+        let input = format!("\x1b[?1049h{A}x{}", d(0));
+        let t = term(20, 5, &input);
+        assert!(t.blocks().is_empty());
+    }
+
+    #[test]
+    fn cwd_from_osc7_is_attached_to_blocks() {
+        let input = format!("\x1b]7;file://host/tmp/mi%20dir\x07{A}$ ");
+        let t = term(20, 5, &input);
+        assert_eq!(t.cwd(), Some("/tmp/mi dir"));
+        assert_eq!(t.blocks()[0].cwd.as_deref(), Some("/tmp/mi dir"));
+    }
+
+    #[test]
+    fn block_points_follow_reflow() {
+        let input = format!("{A}$ {B}cmd\r\n{}abcdefghij\r\n{}{A}$ {B}", c("cmd"), d(0));
+        let mut t = term(12, 6, &input);
+        t.resize(5, 6);
+        assert_eq!(
+            t.block_output(&t.blocks()[0]).as_deref(),
+            Some("abcdefghij")
+        );
+        t.resize(30, 6);
+        assert_eq!(
+            t.block_output(&t.blocks()[0]).as_deref(),
+            Some("abcdefghij")
+        );
+    }
+
+    #[test]
+    fn resize_at_prompt_clears_prompt_for_redraw() {
+        let input = format!("salida\r\n{A}$ {B}texto");
+        let mut t = term(20, 4, &input);
+        t.resize(10, 4);
+        // La línea del prompt queda vacía y el cursor al principio: la shell la redibuja.
+        assert_eq!(t.snapshot_text(), "salida");
+        assert_eq!(pos(&t), (1, 0));
+    }
+
+    #[test]
+    fn evicted_blocks_are_pruned() {
+        let mut input = format!("{A}$ {B}x\r\n{}", c("x"));
+        input.push_str(&"l\r\n".repeat(HISTORY_LIMIT + 50));
+        input.push_str(&format!("{}{A}$ ", d(0)));
+        let t = term(10, 5, &input);
+        // El primer bloque sigue (su final está en el historial), pero su
+        // salida está recortada; el prompt es inalcanzable.
+        assert!(t.blocks()[0].prompt.line < t.grid().first_line());
+        let mut t = t;
+        t.advance("m\r\n".repeat(HISTORY_LIMIT + 50).as_bytes());
+        assert_eq!(t.blocks().len(), 1);
+        assert!(!t.blocks()[0].is_finished());
+    }
+
+    #[test]
+    fn scroll_to_line_and_visible_line() {
+        let mut t = term(10, 2, "1\r\n2\r\n3\r\n4\r\n5");
+        t.scroll_to_line(1);
+        assert_eq!(t.visible_line(0), 1);
+        assert_eq!(t.visible_row(0)[0].ch, '2');
+    }
+
+    #[test]
+    fn selection_is_cleared_on_resize() {
+        let mut t = term(10, 2, "hola");
+        t.set_selection(Some(Selection::new(
+            crate::SelectionKind::Simple,
+            selection::point(0, 0),
+        )));
+        assert_eq!(t.selection_text().as_deref(), Some("h"));
+        t.resize(5, 2);
+        assert!(t.selection().is_none());
     }
 }
