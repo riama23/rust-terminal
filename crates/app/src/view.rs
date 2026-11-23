@@ -362,7 +362,11 @@ define_class!(
     unsafe impl NSTextInputClient for TerminalView {
         #[unsafe(method(insertText:replacementRange:))]
         fn insert_text(&self, string: &AnyObject, _range: NSRange) {
+            let was_composing = !self.ivars().marked.borrow().is_empty();
             self.ivars().marked.borrow_mut().clear();
+            if was_composing {
+                self.update_layout();
+            }
             let text = text_of(string);
             if !text.is_empty() {
                 self.send_input(text.as_bytes());
@@ -377,11 +381,14 @@ define_class!(
         #[unsafe(method(setMarkedText:selectedRange:replacementRange:))]
         fn set_marked_text(&self, string: &AnyObject, _selected: NSRange, _replacement: NSRange) {
             *self.ivars().marked.borrow_mut() = text_of(string);
+            // El texto en composición se dibuja en el cursor (sin enviarlo aún).
+            self.update_layout();
         }
 
         #[unsafe(method(unmarkText))]
         fn unmark_text(&self) {
             self.ivars().marked.borrow_mut().clear();
+            self.update_layout();
         }
 
         #[unsafe(method(selectedRange))]
@@ -828,6 +835,8 @@ impl TerminalView {
                     .borrow()
                     .filter(|(p, _)| p == id)
                     .map(|(_, r)| r),
+                preedit: Some(self.ivars().marked.borrow().clone())
+                    .filter(|m| *id == focused && !m.is_empty()),
             });
         }
         for s in sessions.values() {

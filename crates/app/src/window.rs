@@ -35,6 +35,8 @@ pub struct PaneSlot {
     pub focused: bool,
     /// Enlace bajo el ratón con Cmd (se subraya).
     pub link: Option<SelectionRange>,
+    /// Texto en composición (tecla muerta o método de entrada).
+    pub preedit: Option<String>,
 }
 
 /// Lo que publica el hilo principal para el render.
@@ -269,6 +271,7 @@ impl RenderTarget {
                     modes,
                     overlay: overlay(&term, rows, cols, slot.link),
                     focused: slot.focused,
+                    preedit: slot.preedit.clone(),
                 });
                 continue;
             }
@@ -299,6 +302,7 @@ impl RenderTarget {
                 modes,
                 overlay: overlay(&term, rows, cols, slot.link),
                 focused: slot.focused,
+                preedit: slot.preedit.clone(),
             });
         }
         held.retain(|id, _| wf.panes.iter().any(|p| p.session.id == *id));

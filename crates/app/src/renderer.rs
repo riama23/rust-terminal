@@ -236,6 +236,8 @@ pub struct PaneFrame {
     pub overlay: Overlay,
     /// Panel con el foco del teclado (cursor macizo; los demás, hueco).
     pub focused: bool,
+    /// Texto en composición, que se dibuja en el cursor.
+    pub preedit: Option<String>,
 }
 
 /// Una pestaña de la barra.
@@ -700,6 +702,49 @@ impl Renderer {
                 }
             }
         }
+        if let Some(text) = &pane.preedit {
+            self.draw_preedit(text, pane, glyphs);
+        }
+    }
+
+    /// Texto en composición: celdas con fondo propio y subrayado, desde el
+    /// cursor, encima de lo que haya (la aplicación aún no lo ha recibido).
+    fn draw_preedit(&mut self, text: &str, pane: &PaneFrame, glyphs: &mut Vec<Quad>) {
+        let m = self.fonts.metrics;
+        let (cw, ch) = (m.cell_w as f32, m.cell_h as f32);
+        let (ox, oy) = (pane.rect[0] + pane.pad, pane.rect[1] + pane.pad);
+        let y = oy + pane.cursor.row as f32 * ch;
+        let mut x = ox + pane.cursor.col as f32 * cw;
+        let max_x = pane.rect[0] + pane.rect[2] - pane.pad;
+        let theme = self.theme;
+        let style = Style {
+            bold: false,
+            italic: false,
+        };
+        let start = x;
+        for c in text.chars() {
+            let cells = rust_terminal_core::char_width(c).max(1) as u32;
+            let w = cw * cells as f32;
+            if x + w > max_x {
+                break;
+            }
+            self.quads
+                .push(fill([x, y, w, ch], palette::to_rgba(theme.selection, 1.0)));
+            if let Some(slot) = self.atlas.get(&self.fonts, c, style, cells) {
+                glyphs.push(glyph_quad(
+                    x,
+                    y,
+                    slot,
+                    palette::to_rgba(theme.foreground, 1.0),
+                ));
+            }
+            x += w;
+        }
+        let stroke = m.stroke as f32;
+        glyphs.push(fill(
+            [start, y + ch - stroke, x - start, stroke],
+            palette::to_rgba(palette::ACCENT, 1.0),
+        ));
     }
 }
 
@@ -821,6 +866,7 @@ mod tests {
                 modes: term.modes(),
                 overlay: overlay.clone(),
                 focused: true,
+                preedit: None,
             }],
             dividers: Vec::new(),
             tab_bar: None,
@@ -1103,6 +1149,7 @@ mod tests {
                 modes: term.modes(),
                 overlay: Overlay::default(),
                 focused,
+                preedit: (id == 1).then(|| "´".to_owned()),
             });
         }
         let tab_w = (cw * 28.0).floor();

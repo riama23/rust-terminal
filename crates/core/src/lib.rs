@@ -7,6 +7,12 @@
 /// configuración, el nombre del `.app` y la respuesta a XTVERSION.
 pub const PRODUCT_NAME: &str = "rust-terminal";
 
+/// Celdas que ocupa un carácter (0, 1 o 2), con la misma tabla que usa el
+/// núcleo al imprimir.
+pub fn char_width(c: char) -> usize {
+    unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)
+}
+
 pub mod block;
 pub mod grid;
 pub mod links;
