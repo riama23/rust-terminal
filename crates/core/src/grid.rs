@@ -119,6 +119,10 @@ pub struct Row {
     pub cells: Vec<Cell>,
     /// La línea continúa en la fila siguiente (salto suave por ancho).
     pub wrapped: bool,
+    /// Todas las celdas desde aquí son `Cell::default()` (cota superior: puede
+    /// ser mayor de lo necesario, nunca menor). Evita recorrer y limpiar la
+    /// fila entera al pasarla al historial.
+    pub(crate) used: usize,
 }
 
 impl Row {
@@ -126,6 +130,38 @@ impl Row {
         Row {
             cells: vec![template; cols],
             wrapped: false,
+            used: if template == Cell::default() { 0 } else { cols },
+        }
+    }
+
+    /// Deja la fila en blanco con `template`.
+    fn clear(&mut self, template: Cell) {
+        if template == Cell::default() {
+            let used = self.used.min(self.cells.len());
+            self.cells[..used].fill(template);
+            self.used = 0;
+        } else {
+            self.cells.fill(template);
+            self.used = self.cells.len();
+        }
+        self.wrapped = false;
+    }
+
+    /// Copia de la fila sin las celdas por defecto del final (salvo si tiene
+    /// salto suave), con la capacidad justa.
+    fn compacted(&self) -> Row {
+        let len = if self.wrapped {
+            self.cells.len()
+        } else {
+            self.cells[..self.used.min(self.cells.len())]
+                .iter()
+                .rposition(|c| *c != Cell::default())
+                .map_or(0, |i| i + 1)
+        };
+        Row {
+            cells: self.cells[..len].to_vec(),
+            wrapped: self.wrapped,
+            used: len,
         }
     }
 
@@ -238,7 +274,9 @@ impl Grid {
 
     pub fn cell_mut(&mut self, row: usize, col: usize) -> &mut Cell {
         self.dirty[row] = true;
-        &mut self.rows[row].cells[col]
+        let r = &mut self.rows[row];
+        r.used = r.used.max(col + 1);
+        &mut r.cells[col]
     }
 
     pub fn row(&self, row: usize) -> &[Cell] {
@@ -285,6 +323,20 @@ impl Grid {
     }
 
     /// Memoria aproximada que ocupan las celdas del historial, en bytes.
+    /// Comprueba el invariante de `Row::used` en la pantalla (para tests).
+    #[cfg(test)]
+    pub(crate) fn check_used(&self) {
+        for (i, r) in self.rows.iter().enumerate() {
+            assert!(
+                r.cells[r.used.min(r.cells.len())..]
+                    .iter()
+                    .all(|c| *c == Cell::default()),
+                "fila {i}: hay contenido más allá de used={}",
+                r.used
+            );
+        }
+    }
+
     pub fn history_bytes(&self) -> usize {
         self.history
             .iter()
@@ -325,7 +377,11 @@ impl Grid {
     pub fn clear_cols(&mut self, row: usize, start: usize, end: usize, template: Cell) {
         let end = end.min(self.cols);
         if start < end {
-            self.rows[row].cells[start..end].fill(template);
+            let r = &mut self.rows[row];
+            r.cells[start..end].fill(template);
+            if template != Cell::default() {
+                r.used = r.used.max(end);
+            }
             self.dirty[row] = true;
         }
     }
@@ -334,8 +390,7 @@ impl Grid {
     pub fn clear_rows(&mut self, start: usize, end: usize, template: Cell) {
         let end = end.min(self.rows.len());
         for row in self.rows.iter_mut().take(end).skip(start) {
-            row.cells.fill(template);
-            row.wrapped = false;
+            row.clear(template);
         }
         if start < end {
             self.dirty[start..end].fill(true);
@@ -349,9 +404,11 @@ impl Grid {
         let n = n.min(bottom + 1 - top);
         if top == 0 && self.history_limit > 0 {
             for i in 0..n {
-                let mut row = std::mem::replace(&mut self.rows[i], Row::blank(self.cols, template));
-                row.compact();
-                self.history.push_back(row);
+                // Al historial va una copia compacta (una sola reserva, del
+                // tamaño justo); la fila original se reutiliza en blanco.
+                let row = &mut self.rows[i];
+                self.history.push_back(row.compacted());
+                row.clear(template);
             }
             while self.history.len() > self.history_limit {
                 self.history.pop_front();
@@ -380,6 +437,7 @@ impl Grid {
         let line = &mut self.rows[row].cells[col..];
         line.rotate_right(n);
         line[..n].fill(template);
+        self.rows[row].used = self.cols;
         self.dirty[row] = true;
     }
 
@@ -390,6 +448,7 @@ impl Grid {
         line.rotate_left(n);
         let len = line.len();
         line[len - n..].fill(template);
+        self.rows[row].used = self.cols;
         self.dirty[row] = true;
     }
 
@@ -401,6 +460,7 @@ impl Grid {
         assert!(cols > 0 && rows > 0, "la cuadrícula no puede estar vacía");
         for row in &mut self.rows {
             row.cells.resize(cols, Cell::default());
+            row.used = row.used.min(cols);
             row.wrapped = false;
             // Un carácter ancho cortado por el borde derecho deja de serlo.
             if let Some(last) = row.cells.last_mut()
@@ -561,6 +621,7 @@ impl Grid {
         let mut screen: Vec<Row> = out.split_off(start.min(out.len()));
         screen.truncate(rows);
         for row in &mut screen {
+            row.used = row.cells.len();
             row.cells.resize(cols, Cell::default());
         }
         screen.resize_with(rows, || Row::blank(cols, Cell::default()));

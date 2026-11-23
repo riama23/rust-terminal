@@ -1359,7 +1359,12 @@ impl Perform for Screen {
         } else {
             c
         };
-        let width = match c.width() {
+        // ASCII imprimible (lo más común): ancho 1 sin consultar la tabla.
+        let width = match if (' '..='~').contains(&c) {
+            Some(1)
+        } else {
+            c.width()
+        } {
             Some(w @ 1..=2) => w,
             // Ancho 0 (combinantes, ZWJ, selectores de variante): se une a la
             // celda anterior sin mover el cursor, como en xterm.
@@ -2523,5 +2528,31 @@ mod tests {
         let first = t.grid().first_line();
         let row = &t.grid().line(first).unwrap().cells;
         assert_eq!(t.grid().char_text(row[1].ch), "e\u{301}");
+    }
+
+    #[test]
+    fn row_used_invariant_holds_under_mixed_operations() {
+        let mut t = Term::new(12, 5);
+        let steps: &[&str] = &[
+            "hola mundo largo que salta\r\n",
+            "\x1b[44m\x1b[2K azul\x1b[0m\r\n",
+            "\x1b[2;3H\x1b[3@xyz\x1b[2P",
+            "\x1b[2;4r\x1b[4;1H\n\n\n\x1b[r",
+            "\x1b[1;1H\x1b[2L\x1b[1M",
+            "\x1b[45m\x1b[J\x1b[0m",
+            "日本語テキスト🙂 e\u{301}\r\n",
+            "\x1b[3;5H\x1b[K\x1b[1K\x1b[5X",
+            "\x1b[S\x1b[2T",
+        ];
+        for (i, step) in steps.iter().enumerate() {
+            t.advance(step.as_bytes());
+            t.grid().check_used();
+            if i % 3 == 2 {
+                t.resize(7 + i, 4 + i % 3);
+                t.grid().check_used();
+            }
+        }
+        t.advance(b"\x1b[?1049hfoo\x1b[41m\x1b[2Jbar\x1b[?1049l");
+        t.grid().check_used();
     }
 }
