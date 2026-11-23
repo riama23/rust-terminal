@@ -33,6 +33,12 @@ open -n --stderr /tmp/rt.log --env RT_DEBUG_SIDEBAR=1 target/release/rust-termin
 - [ ] El IME y las teclas muertas muestran el texto compuesto en el sitio correcto.
 - [ ] Las notificaciones y el rebote del Dock siguen funcionando.
 
+## Regresión encontrada y corregida
+
+El refactor dejó varios `downcast` de `contentView()` a `TerminalView` apuntando a una vista que ya no era esa. Dejaron de funcionar, sin error, los avisos de sesión (notificaciones, OSC 52, campana), la recarga de configuración, los cambios de título y **la confirmación de Cmd+Q con un programa en marcha**. Ahora todos pasan por `container::terminal_view`, y no debe volver a hacerse un `downcast` a mano.
+
+Comprobado con `osascript` (`tell application "rust-terminal" to quit`): con la shell inactiva la app cierra; con un programa en marcha (`-e zsh -ic "sleep 300; true"`) sigue viva, es decir, pide confirmación. No se contrastó contra el binario anterior al arreglo.
+
 ## Estado
 
-El reparto calculado se comprobó con una traza temporal (ya retirada): sin panel, la terminal ocupa `(0,0,812,505)`; con el panel de 240 pt, queda en `(240,0,572,505)`. **La comprobación visual y la del ratón están pendientes**: la captura de pantalla falla sin el permiso de Grabación de pantalla.
+El reparto calculado se comprobó con una traza temporal (ya retirada): sin panel, la terminal ocupa `(0,0,812,505)`; con el panel de 240 pt, queda en `(240,0,572,505)`. **La comprobación visual y la del ratón siguen pendientes**: `screencapture` devuelve una imagen negra.

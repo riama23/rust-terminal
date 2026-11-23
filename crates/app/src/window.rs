@@ -164,10 +164,7 @@ define_class!(
         fn session_events(&self) {
             let mtm = MainThreadMarker::new().expect("hilo principal");
             for window in NSApplication::sharedApplication(mtm).windows().iter() {
-                if let Some(view) = window
-                    .contentView()
-                    .and_then(|v| v.downcast::<crate::view::TerminalView>().ok())
-                {
+                if let Some(view) = crate::container::terminal_view(&window) {
                     view.process_events();
                 }
             }
@@ -178,10 +175,7 @@ define_class!(
         fn config_changed(&self) {
             let mtm = MainThreadMarker::new().expect("hilo principal");
             for window in NSApplication::sharedApplication(mtm).windows().iter() {
-                if let Some(view) = window
-                    .contentView()
-                    .and_then(|v| v.downcast::<crate::view::TerminalView>().ok())
-                {
+                if let Some(view) = crate::container::terminal_view(&window) {
                     view.reload_config();
                 }
             }
@@ -192,10 +186,7 @@ define_class!(
         fn sessions_changed(&self) {
             let mtm = MainThreadMarker::new().expect("hilo principal");
             for window in NSApplication::sharedApplication(mtm).windows().iter() {
-                if let Some(view) = window
-                    .contentView()
-                    .and_then(|v| v.downcast::<crate::view::TerminalView>().ok())
-                {
+                if let Some(view) = crate::container::terminal_view(&window) {
                     view.sessions_changed();
                 }
             }

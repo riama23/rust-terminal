@@ -11,8 +11,10 @@ use std::cell::RefCell;
 use objc2::rc::Retained;
 use objc2::runtime::NSObjectProtocol;
 use objc2::{DefinedClass, MainThreadOnly, Message, define_class, msg_send};
-use objc2_app_kit::{NSColor, NSRectFill, NSResponder, NSView};
+use objc2_app_kit::{NSColor, NSRectFill, NSResponder, NSView, NSWindow};
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
+
+use crate::view::TerminalView;
 
 /// Ancho mínimo que se deja a la terminal al repartir.
 pub const MIN_TERMINAL_WIDTH: f64 = 320.0;
@@ -79,6 +81,12 @@ impl ContainerView {
         self.relayout();
     }
 
+    /// La terminal que ocupa el centro.
+    pub fn terminal(&self) -> Option<Retained<TerminalView>> {
+        let view = self.ivars().terminal.borrow().clone()?;
+        view.downcast::<TerminalView>().ok()
+    }
+
     /// Panel izquierdo con su ancho en puntos; `None` lo quita.
     pub fn set_left(&self, panel: Option<(&NSView, f64)>) {
         self.replace(&self.ivars().left, panel);
@@ -129,6 +137,17 @@ impl ContainerView {
                 NSSize::new(right_w, h),
             ));
         }
+    }
+}
+
+/// La `TerminalView` de una ventana. Es el único sitio que sabe cómo llegar a
+/// ella desde la vista de contenido: **no hay que hacer `downcast` de
+/// `contentView()` a mano**, porque la vista de contenido es el contenedor.
+pub fn terminal_view(window: &NSWindow) -> Option<Retained<TerminalView>> {
+    let content = window.contentView()?;
+    match content.downcast::<ContainerView>() {
+        Ok(container) => container.terminal(),
+        Err(content) => content.downcast::<TerminalView>().ok(),
     }
 }
 

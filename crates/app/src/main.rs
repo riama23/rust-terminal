@@ -97,8 +97,7 @@ define_class!(
                 .ivars()
                 .window
                 .get()
-                .and_then(|w| w.contentView())
-                .and_then(|v| v.downcast::<TerminalView>().ok())
+                .and_then(|w| container::terminal_view(w))
                 .is_none_or(|v| v.confirm_quit());
             if ok {
                 NSApplicationTerminateReply::TerminateNow
@@ -114,8 +113,7 @@ impl AppDelegate {
         self.ivars()
             .window
             .get()
-            .and_then(|w| w.contentView())
-            .and_then(|v| v.downcast::<TerminalView>().ok())
+            .and_then(|w| container::terminal_view(w))
     }
 }
 
