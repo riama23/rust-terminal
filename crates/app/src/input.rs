@@ -302,7 +302,7 @@ pub fn encode_kitty(ev: &KeyEvent, flags: u8) -> Option<Vec<u8>> {
         first.push_str(&format!(":{}", shifted as u32));
     }
     let text = (all && flags & kitty::ASSOCIATED_TEXT != 0 && ev.kind != KeyKind::Release)
-        .then(|| ev.text.as_deref())
+        .then_some(ev.text.as_deref())
         .flatten()
         .filter(|t| !t.is_empty() && !t.chars().any(char::is_control))
         .map(|t| {
