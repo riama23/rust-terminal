@@ -501,7 +501,13 @@ impl TerminalView {
 
     /// ⌘N: el formulario de nuevo agente.
     pub fn new_agent_sheet(&self) {
-        self.show_launch_error("El formulario todavía no está hecho.");
+        let project = default_project_dir(self.focused_cwd());
+        let Some(form) = crate::agent_sheet::run(self.mtm(), &project) else {
+            return;
+        };
+        if let Err(e) = self.launch_agent(form.to_spec(), project) {
+            self.show_launch_error(&e);
+        }
     }
 
     /// Muestra un error de lanzamiento.

@@ -104,6 +104,95 @@ impl LaunchSpec {
     }
 }
 
+/// Lo que el usuario rellena en el formulario de nuevo agente.
+#[derive(Debug, Clone, Default)]
+pub struct Form {
+    pub task: String,
+    /// `true`: nuevo worktree; `false`: carpeta actual.
+    pub new_worktree: bool,
+    /// Nombre escrito del worktree; vacío = el que sale de la tarea.
+    pub worktree_name: String,
+    pub mode_index: usize,
+    /// 0 = el predeterminado de Claude Code; el resto, `MODELS[i - 1]`.
+    pub model_index: usize,
+}
+
+/// Modelos que ofrece el formulario (alias de `--model`).
+pub const MODELS: &[&str] = &["opus", "sonnet", "haiku"];
+/// Modos de inicio, en el orden del formulario.
+pub const MODES: &[StartMode] = &[StartMode::Plan, StartMode::Ask, StartMode::AcceptEdits];
+
+/// ¿`dir` está dentro de un repositorio git? (`-w` solo funciona en uno.)
+pub fn is_git_repo(dir: &Path) -> bool {
+    dir.ancestors().any(|d| d.join(".git").exists())
+}
+
+/// Nombre de worktree a partir de la tarea: minúsculas, palabras unidas por
+/// «-», sin acentos ni símbolos, de hasta 40 caracteres.
+pub fn slug(task: &str) -> String {
+    let mut out = String::new();
+    for word in task.split(|c: char| !c.is_alphanumeric()) {
+        let word: String = word
+            .chars()
+            .map(|c| match c {
+                'á' | 'à' | 'ä' | 'â' | 'Á' => 'a',
+                'é' | 'è' | 'ë' | 'ê' | 'É' => 'e',
+                'í' | 'ì' | 'ï' | 'î' | 'Í' => 'i',
+                'ó' | 'ò' | 'ö' | 'ô' | 'Ó' => 'o',
+                'ú' | 'ù' | 'ü' | 'û' | 'Ú' => 'u',
+                'ñ' | 'Ñ' => 'n',
+                c => c,
+            })
+            .filter(char::is_ascii_alphanumeric)
+            .collect::<String>()
+            .to_ascii_lowercase();
+        if word.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            if out.len() + 1 + word.len() > 40 {
+                break;
+            }
+            out.push('-');
+        }
+        out.push_str(&word);
+        if out.len() >= 40 {
+            out.truncate(40);
+            break;
+        }
+    }
+    out
+}
+
+impl Form {
+    pub fn to_spec(&self) -> LaunchSpec {
+        let name = self.worktree_name.trim();
+        let name = if name.is_empty() {
+            slug(&self.task)
+        } else {
+            name.to_owned()
+        };
+        LaunchSpec {
+            task: self.task.trim().to_owned(),
+            isolation: if self.new_worktree {
+                Isolation::NewWorktree(name)
+            } else {
+                Isolation::CurrentFolder
+            },
+            mode: MODES
+                .get(self.mode_index)
+                .copied()
+                .unwrap_or(StartMode::Ask),
+            model: self
+                .model_index
+                .checked_sub(1)
+                .and_then(|i| MODELS.get(i))
+                .map(|m| (*m).to_owned()),
+            title: None,
+        }
+    }
+}
+
 /// Argumentos de `claude` (sin el nombre del programa). La tarea va tras `--`
 /// para que un texto que empiece por `-` no se lea como una opción.
 pub fn command_args(spec: &LaunchSpec, settings_path: &Path) -> Result<Vec<String>, SpecError> {
@@ -629,5 +718,121 @@ mod tests {
         assert!(!process_alive(0));
         // Un pid muy alto que no existe.
         assert!(!process_alive(4_000_000));
+    }
+
+    #[test]
+    fn detecta_si_una_carpeta_esta_en_un_repositorio() {
+        let base = tmpdir("git");
+        let repo = base.join("repo");
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        fs::create_dir_all(repo.join("src/profundo")).unwrap();
+        fs::create_dir_all(base.join("suelta")).unwrap();
+        assert!(is_git_repo(&repo));
+        assert!(
+            is_git_repo(&repo.join("src/profundo")),
+            "desde una subcarpeta"
+        );
+        assert!(!is_git_repo(&base.join("suelta")));
+        // Un worktree tiene `.git` como archivo, no como carpeta.
+        let wt = base.join("wt");
+        fs::create_dir_all(&wt).unwrap();
+        fs::write(wt.join(".git"), "gitdir: /x").unwrap();
+        assert!(is_git_repo(&wt));
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn el_slug_limpia_acentos_simbolos_y_longitud() {
+        assert_eq!(
+            slug("Arregla el escape de comillas"),
+            "arregla-el-escape-de-comillas"
+        );
+        assert_eq!(slug("¡Añade   tests, por favor!"), "anade-tests-por-favor");
+        assert_eq!(slug("  --$(rm -rf)--  "), "rm-rf");
+        assert_eq!(slug(""), "");
+        assert_eq!(slug("¿¿??"), "");
+        let largo = slug(&"palabra ".repeat(20));
+        assert!(largo.len() <= 40 && !largo.ends_with('-'), "{largo}");
+        assert_eq!(slug(&"x".repeat(100)).len(), 40);
+    }
+
+    #[test]
+    fn el_slug_siempre_es_un_nombre_de_worktree_valido() {
+        for task in ["Arregla el bug", "¡¡Hola!!", "ñandú ÁÉÍÓÚ", "a/b\\c", "--x"] {
+            let s = slug(task);
+            assert!(s.is_empty() || valid_name(&s), "{task:?} -> {s:?}");
+        }
+    }
+
+    #[test]
+    fn el_formulario_compone_el_spec() {
+        let form = Form {
+            task: "  Arregla el bug  ".into(),
+            new_worktree: true,
+            worktree_name: "".into(),
+            mode_index: 0,
+            model_index: 1,
+        };
+        let spec = form.to_spec();
+        assert_eq!(spec.task, "Arregla el bug");
+        assert_eq!(
+            spec.isolation,
+            Isolation::NewWorktree("arregla-el-bug".into())
+        );
+        assert_eq!(spec.mode, StartMode::Plan);
+        assert_eq!(spec.model.as_deref(), Some("opus"));
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn el_nombre_escrito_manda_sobre_el_de_la_tarea() {
+        let form = Form {
+            task: "Tarea".into(),
+            new_worktree: true,
+            worktree_name: " mi-rama ".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            form.to_spec().isolation,
+            Isolation::NewWorktree("mi-rama".into())
+        );
+    }
+
+    #[test]
+    fn carpeta_actual_modelo_predeterminado_e_indices_fuera_de_rango() {
+        let form = Form {
+            task: "x".into(),
+            mode_index: 99,
+            model_index: 0,
+            ..Default::default()
+        };
+        let spec = form.to_spec();
+        assert_eq!(spec.isolation, Isolation::CurrentFolder);
+        assert_eq!(spec.model, None);
+        assert_eq!(
+            spec.mode,
+            StartMode::Ask,
+            "un índice raro cae en el modo seguro"
+        );
+        let fuera = Form {
+            model_index: 99,
+            ..form
+        };
+        assert_eq!(fuera.to_spec().model, None);
+    }
+
+    #[test]
+    fn un_worktree_sin_nombre_posible_no_valida() {
+        let form = Form {
+            task: "¿¿??".into(),
+            new_worktree: true,
+            ..Default::default()
+        };
+        assert_eq!(form.to_spec().validate(), Err(SpecError::BadWorktreeName));
+        let vacia = Form {
+            new_worktree: true,
+            ..Default::default()
+        };
+        assert_eq!(vacia.to_spec().validate(), Err(SpecError::EmptyTask));
     }
 }

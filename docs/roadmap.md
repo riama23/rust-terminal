@@ -7,8 +7,8 @@ Este documento encaja el spec de producto (`docs/macOS Terminal — UI UX Spec f
 | Versión | Tema | Estado |
 | --- | --- | --- |
 | v1.0 | Cierre de la v1: semana de prueba, latencia, throughput | En curso |
-| v1.1 | Spike de hooks + ventana como contenedor de vistas | Pendiente |
-| v1.2 | Broker, lanzar agente, sidebar, aprobar y denegar | Pendiente |
+| v1.1 | Spike de hooks + ventana como contenedor de vistas | Hecho (rama `v1.1-contenedor`), verificación manual pendiente |
+| v1.2 | Broker, lanzar agente, sidebar, aprobar y denegar | Hecho (misma rama), verificación manual pendiente (`docs/verificacion-v1.2.md`) |
 | v1.3 | Notificaciones accionables, Dock badge, menu bar extra | Pendiente |
 | v1.4 | Review de diff, comentarios en lote, inspector | Pendiente |
 | v1.5 | Bloques visuales, paleta de comandos, polish de splits | Pendiente |

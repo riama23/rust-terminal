@@ -3,6 +3,7 @@
 
 mod agent;
 mod agent_controller;
+mod agent_sheet;
 mod agent_ui;
 mod config;
 mod container;
@@ -397,6 +398,10 @@ fn open_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
         unsafe { view.displayLinkWithTarget_selector(target, sel!(tick:)) }
     });
     view.start(waker.clone());
+    // Ayuda de verificación: `RT_OPEN_SHEET=1` abre el formulario de nuevo agente.
+    if std::env::var_os("RT_OPEN_SHEET").is_some() {
+        view.new_agent_sheet();
+    }
     // Ayuda de verificación: `RT_AGENT_TEST="tarea"` lanza un agente al arrancar,
     // en `RT_AGENT_DIR` (o la carpeta actual), sin pasar por el formulario.
     if let Some(task) = std::env::var("RT_AGENT_TEST")
