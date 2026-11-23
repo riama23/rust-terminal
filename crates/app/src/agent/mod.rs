@@ -6,10 +6,13 @@
 
 pub mod alerts;
 pub mod broker;
+pub mod diff;
+pub mod git;
 pub mod http;
 pub mod hub;
 pub mod launch;
 pub mod model;
+pub mod review;
 pub mod rules;
 
 #[cfg(test)]
