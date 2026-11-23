@@ -1,13 +1,16 @@
 //! Estado del terminal: interpreta las acciones de `vte` sobre la cuadrícula.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use unicode_width::UnicodeWidthChar;
 use vte::{Params, Parser, Perform};
 
 use crate::block::{self, Block};
 use crate::grid::{Cell, Color, Flags, Grid, Line, Point};
+use crate::links;
 use crate::selection::{self, Selection, SelectionRange};
 
 /// Líneas de historial de la pantalla principal (límite inicial, pendiente de medir).
@@ -36,7 +39,49 @@ pub struct Modes {
     pub bracketed_paste: bool,
     /// Pantalla alternativa activa (`?47`, `?1047`, `?1049`).
     pub alt_screen: bool,
+    /// Qué eventos de ratón quiere la aplicación (`?1000`, `?1002`, `?1003`).
+    pub mouse: MouseMode,
+    /// `?1006`: coordenadas del ratón en formato SGR.
+    pub mouse_sgr: bool,
+    /// `?1004`: avisar a la aplicación al ganar y perder el foco.
+    pub focus_events: bool,
+    /// `?1007`: en la pantalla alternativa la rueda envía flechas.
+    pub alt_scroll: bool,
+    /// Banderas activas del protocolo de teclado de kitty (0 = clásico).
+    pub kitty_flags: u8,
+    /// Nivel de modifyOtherKeys de xterm (`CSI > 4 ; n m`).
+    pub modify_other_keys: u8,
 }
+
+/// Eventos de ratón que pide la aplicación.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MouseMode {
+    #[default]
+    Off,
+    /// `?1000`: pulsar y soltar.
+    Click,
+    /// `?1002`: además, mover con un botón pulsado.
+    Drag,
+    /// `?1003`: cualquier movimiento.
+    Motion,
+}
+
+/// Algo que la app tiene que hacer fuera de la cuadrícula.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TermEvent {
+    /// OSC 52: copiar al portapapeles.
+    Clipboard(String),
+    /// OSC 9, 777 o 99: notificación del sistema.
+    Notification { title: Option<String>, body: String },
+}
+
+/// Tiempo máximo que se respeta el modo DEC 2026 sin cerrar.
+pub const SYNC_TIMEOUT: Duration = Duration::from_millis(150);
+
+/// Modos que entiende DECRQM (`CSI ? Ps $ p`).
+const KNOWN_PRIVATE_MODES: [u16; 14] = [
+    1, 7, 25, 47, 1000, 1002, 1003, 1004, 1006, 1007, 1047, 1049, 2004, 2026,
+];
 
 impl Default for Modes {
     fn default() -> Self {
@@ -46,6 +91,12 @@ impl Default for Modes {
             cursor_visible: true,
             bracketed_paste: false,
             alt_screen: false,
+            mouse: MouseMode::Off,
+            mouse_sgr: false,
+            focus_events: false,
+            alt_scroll: true,
+            kitty_flags: 0,
+            modify_other_keys: 0,
         }
     }
 }
@@ -56,6 +107,8 @@ struct Pen {
     fg: Color,
     bg: Color,
     flags: Flags,
+    /// Enlace OSC 8 activo.
+    link: u16,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -106,6 +159,15 @@ struct Screen {
     /// Directorio de trabajo comunicado por OSC 7.
     cwd: Option<String>,
     selection: Option<Selection>,
+    /// Pilas del protocolo de teclado de kitty de la pantalla activa y de la otra.
+    kitty_stack: Vec<u8>,
+    inactive_kitty_stack: Vec<u8>,
+    /// DEC 2026 activo desde este instante.
+    sync_since: Option<Instant>,
+    /// Enlaces OSC 8: `links[id - 1]`, con índice inverso para reutilizar ids.
+    links: Vec<String>,
+    link_ids: HashMap<String, u16>,
+    events: Vec<TermEvent>,
 }
 
 pub struct Term {
@@ -138,6 +200,87 @@ impl Term {
             }
             s.display_offset = offset;
         }
+    }
+
+    /// Eventos pendientes para la app (portapapeles, notificaciones).
+    pub fn take_events(&mut self) -> Vec<TermEvent> {
+        std::mem::take(&mut self.screen.events)
+    }
+
+    /// DEC 2026 activo (y sin pasar del límite de tiempo): la app debe
+    /// seguir mostrando el último frame de este panel.
+    pub fn synchronized(&self) -> bool {
+        self.screen
+            .sync_since
+            .is_some_and(|t| t.elapsed() < SYNC_TIMEOUT)
+    }
+
+    /// URL de un enlace OSC 8 por su id.
+    pub fn link(&self, id: u16) -> Option<&str> {
+        let i = (id as usize).checked_sub(1)?;
+        self.screen.links.get(i).map(String::as_str)
+    }
+
+    /// Enlace bajo un punto: primero OSC 8 y, si no hay, una URL en el texto
+    /// de su línea lógica. Devuelve la URL y su rango en esa línea.
+    pub fn link_at(&self, at: Point) -> Option<(String, SelectionRange)> {
+        let grid = &self.screen.grid;
+        let cell = grid.line(at.line)?.cells.get(at.col)?;
+        if cell.link != 0 {
+            let url = self.link(cell.link)?.to_owned();
+            // Extensión del enlace en la fila (celdas contiguas con el mismo id).
+            let row = &grid.line(at.line)?.cells;
+            let start = (0..=at.col)
+                .rev()
+                .take_while(|&c| row[c].link == cell.link)
+                .last()?;
+            let end = (at.col..row.len())
+                .take_while(|&c| row[c].link == cell.link)
+                .last()?;
+            let range = SelectionRange {
+                start: selection::point(at.line, start),
+                end: selection::point(at.line, end),
+                block: false,
+            };
+            return Some((url, range));
+        }
+        // Línea lógica que contiene el punto.
+        let mut first = at.line;
+        while first > grid.first_line() && grid.line(first - 1).is_some_and(|r| r.wrapped) {
+            first -= 1;
+        }
+        let mut chars = Vec::new();
+        let mut positions = Vec::new();
+        let mut line = first;
+        while let Some(row) = grid.line(line) {
+            for (col, c) in row.cells.iter().enumerate() {
+                if !c.flags.contains(Flags::WIDE_SPACER) {
+                    chars.push(c.ch);
+                    positions.push((line, col));
+                }
+            }
+            if !row.wrapped {
+                break;
+            }
+            line += 1;
+        }
+        let here = positions
+            .iter()
+            .position(|&(l, c)| l == at.line && (c == at.col || c + 1 == at.col))?;
+        let (a, b) = links::find_urls(&chars)
+            .into_iter()
+            .find(|&(a, b)| a <= here && here < b)?;
+        let url: String = chars[a..b].iter().collect();
+        let (sl, sc) = positions[a];
+        let (el, ec) = positions[b - 1];
+        Some((
+            url,
+            SelectionRange {
+                start: selection::point(sl, sc),
+                end: selection::point(el, ec),
+                block: false,
+            },
+        ))
     }
 
     /// Bloques de comandos (OSC 133), del más antiguo al más reciente.
@@ -519,6 +662,12 @@ impl Screen {
             next_block_id: 0,
             cwd: None,
             selection: None,
+            kitty_stack: Vec::new(),
+            inactive_kitty_stack: Vec::new(),
+            sync_since: None,
+            links: Vec::new(),
+            link_ids: HashMap::new(),
+            events: Vec::new(),
         }
     }
 
@@ -559,6 +708,8 @@ impl Screen {
                     exit_code: None,
                     command: None,
                     cwd: self.cwd.clone(),
+                    started_at: None,
+                    finished_at: None,
                 });
             }
             Some(b'B') => {
@@ -569,6 +720,7 @@ impl Screen {
             Some(b'C') => {
                 if let Some(b) = self.blocks.last_mut().filter(|b| b.output.is_none()) {
                     b.output = Some(here);
+                    b.started_at = Some(Instant::now());
                     b.command = params[2..].iter().find_map(|p| {
                         std::str::from_utf8(p)
                             .ok()?
@@ -584,6 +736,7 @@ impl Screen {
                     .filter(|b| b.output.is_some() && !b.is_finished())
                 {
                     b.end = Some(here);
+                    b.finished_at = Some(Instant::now());
                     b.exit_code = params
                         .get(2)
                         .and_then(|p| std::str::from_utf8(p).ok())
@@ -770,6 +923,8 @@ impl Screen {
         }
         std::mem::swap(&mut self.grid, &mut self.inactive_grid);
         std::mem::swap(&mut self.saved, &mut self.inactive_saved);
+        std::mem::swap(&mut self.kitty_stack, &mut self.inactive_kitty_stack);
+        self.modes.kitty_flags = self.kitty_stack.last().copied().unwrap_or(0);
         self.modes.alt_screen = alt;
         if alt && clear_alt {
             let rows = self.rows();
@@ -803,6 +958,18 @@ impl Screen {
                     }
                 }
                 2004 => self.modes.bracketed_paste = on,
+                1000 | 1002 | 1003 => {
+                    self.modes.mouse = match (on, p[0]) {
+                        (false, _) => MouseMode::Off,
+                        (true, 1000) => MouseMode::Click,
+                        (true, 1002) => MouseMode::Drag,
+                        _ => MouseMode::Motion,
+                    };
+                }
+                1004 => self.modes.focus_events = on,
+                1006 => self.modes.mouse_sgr = on,
+                1007 => self.modes.alt_scroll = on,
+                2026 => self.sync_since = on.then(Instant::now),
                 n => log_unhandled(format_args!(
                     "modo privado ?{n} {}",
                     if on { "h" } else { "l" }
@@ -822,6 +989,162 @@ impl Screen {
         }
     }
 
+    /// DECRQM (`CSI ? Ps $ p`): 1 = activo, 2 = inactivo, 0 = desconocido.
+    fn report_private_mode(&mut self, mode: u16) {
+        let m = self.modes;
+        let state = match mode {
+            1 => Some(m.app_cursor),
+            7 => Some(m.autowrap),
+            25 => Some(m.cursor_visible),
+            47 | 1047 | 1049 => Some(m.alt_screen),
+            1000 => Some(m.mouse == MouseMode::Click),
+            1002 => Some(m.mouse == MouseMode::Drag),
+            1003 => Some(m.mouse == MouseMode::Motion),
+            1004 => Some(m.focus_events),
+            1006 => Some(m.mouse_sgr),
+            1007 => Some(m.alt_scroll),
+            2004 => Some(m.bracketed_paste),
+            2026 => Some(self.sync_since.is_some()),
+            _ => None,
+        };
+        debug_assert!(state.is_none() || KNOWN_PRIVATE_MODES.contains(&mode));
+        let value = match state {
+            Some(true) => 1,
+            Some(false) => 2,
+            None => 0,
+        };
+        let _ = write!(Bytes(&mut self.responses), "\x1b[?{mode};{value}$y");
+    }
+
+    /// Protocolo de teclado de kitty: `CSI > f u` (apilar), `CSI < n u`
+    /// (desapilar), `CSI = f ; m u` (cambiar) y `CSI ? u` (consultar).
+    fn kitty_keyboard(&mut self, kind: u8, params: &Params) {
+        const MAX_DEPTH: usize = 16;
+        match kind {
+            b'>' => {
+                if self.kitty_stack.len() >= MAX_DEPTH {
+                    self.kitty_stack.remove(0);
+                }
+                self.kitty_stack.push(raw(params, 0) as u8 & 0x1f);
+            }
+            b'<' => {
+                let n = param(params, 0, 1).min(self.kitty_stack.len());
+                self.kitty_stack.truncate(self.kitty_stack.len() - n);
+            }
+            b'=' => {
+                let flags = raw(params, 0) as u8 & 0x1f;
+                let current = self.kitty_stack.last().copied().unwrap_or(0);
+                let new = match param(params, 1, 1) {
+                    2 => current | flags,
+                    3 => current & !flags,
+                    _ => flags,
+                };
+                match self.kitty_stack.last_mut() {
+                    Some(top) => *top = new,
+                    None => self.kitty_stack.push(new),
+                }
+            }
+            _ => {
+                let flags = self.kitty_stack.last().copied().unwrap_or(0);
+                let _ = write!(Bytes(&mut self.responses), "\x1b[?{flags}u");
+            }
+        }
+        self.modes.kitty_flags = self.kitty_stack.last().copied().unwrap_or(0);
+    }
+
+    /// OSC 8: `OSC 8 ; params ; URI`. Un URI vacío cierra el enlace.
+    fn hyperlink(&mut self, params: &[&[u8]]) {
+        let uri = params
+            .get(2..)
+            .map(|p| {
+                p.iter()
+                    .map(|b| String::from_utf8_lossy(b))
+                    .collect::<Vec<_>>()
+                    .join(";")
+            })
+            .unwrap_or_default();
+        if uri.is_empty() {
+            self.pen.link = 0;
+            return;
+        }
+        let id = match self.link_ids.get(&uri) {
+            Some(&id) => id,
+            None if self.links.len() < u16::MAX as usize => {
+                self.links.push(uri.clone());
+                let id = self.links.len() as u16;
+                self.link_ids.insert(uri, id);
+                id
+            }
+            None => 0,
+        };
+        self.pen.link = id;
+    }
+
+    /// OSC 9, 777 y 99: notificaciones.
+    fn notification(&mut self, params: &[&[u8]]) {
+        let text = |i: usize| -> String {
+            params
+                .get(i..)
+                .map(|p| {
+                    p.iter()
+                        .map(|b| String::from_utf8_lossy(b))
+                        .collect::<Vec<_>>()
+                        .join(";")
+                })
+                .unwrap_or_default()
+        };
+        let event = match params[0] {
+            // OSC 9 ; texto (iTerm2). `OSC 9 ; 4 ; …` es una barra de progreso (ConEmu).
+            b"9" if params.get(1) != Some(&&b"4"[..]) => Some(TermEvent::Notification {
+                title: None,
+                body: text(1),
+            }),
+            // OSC 777 ; notify ; título ; cuerpo (rxvt, Ghostty).
+            b"777" if params.get(1) == Some(&&b"notify"[..]) => Some(TermEvent::Notification {
+                title: params
+                    .get(2)
+                    .map(|t| String::from_utf8_lossy(t).into_owned()),
+                body: text(3),
+            }),
+            // OSC 99 ; metadatos ; texto (kitty, forma sencilla).
+            b"99" => {
+                let meta = params
+                    .get(1)
+                    .map(|m| String::from_utf8_lossy(m))
+                    .unwrap_or_default();
+                let body = text(2);
+                if meta.contains("p=title") {
+                    Some(TermEvent::Notification {
+                        title: Some(body),
+                        body: String::new(),
+                    })
+                } else {
+                    Some(TermEvent::Notification { title: None, body })
+                }
+            }
+            _ => None,
+        };
+        if let Some(event) = event.filter(
+            |e| !matches!(e, TermEvent::Notification { title: None, body } if body.is_empty()),
+        ) {
+            self.events.push(event);
+        }
+    }
+
+    /// OSC 52 ; destino ; datos en base64. Solo se permite escribir.
+    fn clipboard(&mut self, params: &[&[u8]]) {
+        let Some(data) = params.get(2).and_then(|d| std::str::from_utf8(d).ok()) else {
+            return;
+        };
+        if data == "?" {
+            log_unhandled(format_args!("OSC 52 lectura del portapapeles (denegada)"));
+            return;
+        }
+        if let Some(text) = links::base64_decode(data).and_then(|b| String::from_utf8(b).ok()) {
+            self.events.push(TermEvent::Clipboard(text));
+        }
+    }
+
     fn reset(&mut self) {
         let title = self.title.take();
         *self = Screen::new(self.cols(), self.rows());
@@ -830,15 +1153,20 @@ impl Screen {
 
     fn sgr(&mut self, params: &Params) {
         let params: Vec<&[u16]> = params.iter().collect();
+        // El enlace OSC 8 no forma parte de SGR: sobrevive a un reset.
+        let reset = Pen {
+            link: self.pen.link,
+            ..Pen::default()
+        };
         if params.is_empty() {
-            self.pen = Pen::default();
+            self.pen = reset;
             return;
         }
         let mut i = 0;
         while i < params.len() {
             let p = params[i];
             match p[0] {
-                0 => self.pen = Pen::default(),
+                0 => self.pen = reset,
                 1 => self.pen.flags.insert(Flags::BOLD),
                 2 => self.pen.flags.insert(Flags::DIM),
                 3 => self.pen.flags.insert(Flags::ITALIC),
@@ -956,7 +1284,12 @@ impl Perform for Screen {
             }
         }
 
-        let Pen { fg, bg, flags } = self.pen;
+        let Pen {
+            fg,
+            bg,
+            flags,
+            link,
+        } = self.pen;
         let Cursor { row, col, .. } = self.cursor;
         let mut cell_flags = flags;
         if width == 2 {
@@ -970,6 +1303,7 @@ impl Perform for Screen {
                 fg,
                 bg,
                 flags: cell_flags,
+                link,
             },
         );
         if width == 2 {
@@ -981,6 +1315,7 @@ impl Perform for Screen {
                     fg,
                     bg,
                     flags: flags | Flags::WIDE_SPACER,
+                    link,
                 },
             );
         }
@@ -1056,6 +1391,9 @@ impl Perform for Screen {
             // Título del icono: no aplica en macOS.
             Some(&b"1") => {}
             Some(&b"133") => self.shell_mark(params),
+            Some(&b"8") => self.hyperlink(params),
+            Some(&b"52") => self.clipboard(params),
+            Some(&(b"9" | b"777" | b"99")) => self.notification(params),
             Some(&b"7") => {
                 if let Some(path) = params
                     .get(1)
@@ -1084,6 +1422,22 @@ impl Perform for Screen {
             ([b'?'], 'h') => return self.set_private_mode(params, true),
             ([b'?'], 'l') => return self.set_private_mode(params, false),
             ([b'>'], 'c') => return self.responses.extend_from_slice(DA2_RESPONSE),
+            ([b'?', b'$'], 'p') => return self.report_private_mode(raw(params, 0)),
+            // XTVERSION.
+            ([b'>'], 'q') => {
+                return self.responses.extend_from_slice(
+                    concat!("\x1bP>|rust-terminal ", env!("CARGO_PKG_VERSION"), "\x1b\\")
+                        .as_bytes(),
+                );
+            }
+            ([k @ (b'>' | b'<' | b'=' | b'?')], 'u') => return self.kitty_keyboard(*k, params),
+            // modifyOtherKeys: `CSI > 4 ; n m`.
+            ([b'>'], 'm') => {
+                if raw(params, 0) == 4 {
+                    self.modes.modify_other_keys = raw(params, 1).min(2) as u8;
+                }
+                return;
+            }
             _ => {
                 return log_unhandled(format_args!(
                     "CSI {}{}{action}",
@@ -1833,5 +2187,154 @@ mod tests {
         assert_eq!(t.selection_text().as_deref(), Some("h"));
         t.resize(5, 2);
         assert!(t.selection().is_none());
+    }
+
+    #[test]
+    fn mouse_focus_and_scroll_modes() {
+        let mut t = term(5, 1, "\x1b[?1002;1006;1004h");
+        let m = t.modes();
+        assert_eq!(m.mouse, MouseMode::Drag);
+        assert!(m.mouse_sgr && m.focus_events && m.alt_scroll);
+        t.advance(b"\x1b[?1003h");
+        assert_eq!(t.modes().mouse, MouseMode::Motion);
+        t.advance(b"\x1b[?1003l\x1b[?1007l");
+        assert_eq!(t.modes().mouse, MouseMode::Off);
+        assert!(!t.modes().alt_scroll);
+    }
+
+    #[test]
+    fn decrqm_reports_modes() {
+        let mut t = term(
+            5,
+            1,
+            "\x1b[?2026h\x1b[?2026$p\x1b[?25$p\x1b[?1000$p\x1b[?9999$p",
+        );
+        assert_eq!(
+            t.take_responses(),
+            b"\x1b[?2026;1$y\x1b[?25;1$y\x1b[?1000;2$y\x1b[?9999;0$y".to_vec()
+        );
+    }
+
+    #[test]
+    fn xtversion() {
+        let mut t = term(5, 1, "\x1b[>q");
+        let r = String::from_utf8(t.take_responses()).unwrap();
+        assert!(
+            r.starts_with("\x1bP>|rust-terminal ") && r.ends_with("\x1b\\"),
+            "{r:?}"
+        );
+    }
+
+    #[test]
+    fn synchronized_output_with_timeout() {
+        let mut t = term(5, 1, "\x1b[?2026h");
+        assert!(t.synchronized());
+        t.advance(b"\x1b[?2026l");
+        assert!(!t.synchronized());
+        t.advance(b"\x1b[?2026h");
+        std::thread::sleep(SYNC_TIMEOUT + Duration::from_millis(20));
+        assert!(!t.synchronized());
+    }
+
+    #[test]
+    fn kitty_keyboard_stack() {
+        let mut t = term(5, 1, "\x1b[?u");
+        assert_eq!(t.take_responses(), b"\x1b[?0u");
+        t.advance(b"\x1b[>1u\x1b[>27u\x1b[?u");
+        assert_eq!(t.modes().kitty_flags, 27);
+        assert_eq!(t.take_responses(), b"\x1b[?27u");
+        t.advance(b"\x1b[=8;3u");
+        assert_eq!(t.modes().kitty_flags, 27 & !8);
+        t.advance(b"\x1b[=8;2u");
+        assert_eq!(t.modes().kitty_flags, 27);
+        t.advance(b"\x1b[<u");
+        assert_eq!(t.modes().kitty_flags, 1);
+        t.advance(b"\x1b[<5u");
+        assert_eq!(t.modes().kitty_flags, 0);
+    }
+
+    #[test]
+    fn kitty_stack_is_per_screen() {
+        let mut t = term(5, 1, "\x1b[>1u\x1b[?1049h");
+        assert_eq!(t.modes().kitty_flags, 0);
+        t.advance(b"\x1b[>8u\x1b[?1049l");
+        assert_eq!(t.modes().kitty_flags, 1);
+    }
+
+    #[test]
+    fn modify_other_keys() {
+        let mut t = term(5, 1, "\x1b[>4;2m");
+        assert_eq!(t.modes().modify_other_keys, 2);
+        t.advance(b"\x1b[>4m");
+        assert_eq!(t.modes().modify_other_keys, 0);
+    }
+
+    #[test]
+    fn osc8_hyperlinks_survive_sgr_reset() {
+        let t = term(
+            30,
+            1,
+            "a\x1b]8;;https://ej.es\x07li\x1b[0mnk\x1b]8;;\x07 b\x1b]8;id=x;https://ej.es\x07c",
+        );
+        let row = t.grid().row(0);
+        assert_eq!(row[0].link, 0);
+        assert!(row[1].link != 0 && row[1].link == row[4].link);
+        assert_eq!(row[5].link, 0);
+        // La misma URL reutiliza el id.
+        assert_eq!(row[7].link, row[1].link);
+        assert_eq!(t.link(row[1].link), Some("https://ej.es"));
+        let (url, range) = t.link_at(selection::point(0, 3)).unwrap();
+        assert_eq!(url, "https://ej.es");
+        assert_eq!((range.start.col, range.end.col), (1, 4));
+    }
+
+    #[test]
+    fn plain_urls_are_found_across_wrapped_rows() {
+        let t = term(10, 3, "ver https://ej.es/abc fin");
+        let (url, range) = t.link_at(selection::point(1, 2)).unwrap();
+        assert_eq!(url, "https://ej.es/abc");
+        assert_eq!((range.start.line, range.start.col), (0, 4));
+        assert!(t.link_at(selection::point(0, 0)).is_none());
+    }
+
+    #[test]
+    fn clipboard_write_only() {
+        let mut t = term(5, 1, "\x1b]52;c;aG9sYSDDsQ==\x07\x1b]52;c;?\x07");
+        assert_eq!(t.take_events(), [TermEvent::Clipboard("hola ñ".to_owned())]);
+        // La lectura no responde nada.
+        assert!(t.take_responses().is_empty());
+    }
+
+    #[test]
+    fn notifications() {
+        let mut t = term(
+            5,
+            1,
+            "\x1b]9;Hecho\x07\x1b]9;4;1;50\x07\x1b]777;notify;Claude;Listo\x07\x1b]99;;Kitty\x07",
+        );
+        assert_eq!(
+            t.take_events(),
+            [
+                TermEvent::Notification {
+                    title: None,
+                    body: "Hecho".into()
+                },
+                TermEvent::Notification {
+                    title: Some("Claude".into()),
+                    body: "Listo".into()
+                },
+                TermEvent::Notification {
+                    title: None,
+                    body: "Kitty".into()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn blocks_record_duration() {
+        let input = format!("{A}$ {B}x\r\n{}{}{A}$ ", c("x"), d(0));
+        let t = term(20, 5, &input);
+        assert!(t.blocks()[0].duration().is_some());
     }
 }

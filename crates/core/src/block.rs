@@ -22,11 +22,19 @@ pub struct Block {
     pub command: Option<String>,
     /// Directorio de trabajo (OSC 7) cuando se mostró el prompt.
     pub cwd: Option<String>,
+    /// Cuándo empezó la salida (marca C) y cuándo terminó (marca D).
+    pub started_at: Option<std::time::Instant>,
+    pub finished_at: Option<std::time::Instant>,
 }
 
 impl Block {
     pub fn is_finished(&self) -> bool {
         self.end.is_some()
+    }
+
+    /// Cuánto tardó el comando, si ya terminó.
+    pub fn duration(&self) -> Option<std::time::Duration> {
+        Some(self.finished_at?.duration_since(self.started_at?))
     }
 
     /// Todos los puntos del bloque, para recolocarlos en el reflow.

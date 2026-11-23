@@ -74,6 +74,9 @@ pub struct Cell {
     pub fg: Color,
     pub bg: Color,
     pub flags: Flags,
+    /// Enlace OSC 8 (índice en la tabla de `Term`; 0 = sin enlace). Ocupa el
+    /// relleno que ya tenía la celda: sigue midiendo 16 bytes.
+    pub link: u16,
 }
 
 impl Default for Cell {
@@ -83,6 +86,7 @@ impl Default for Cell {
             fg: Color::Default,
             bg: Color::Default,
             flags: Flags::empty(),
+            link: 0,
         }
     }
 }
