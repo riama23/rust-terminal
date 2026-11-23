@@ -121,3 +121,26 @@ fn hangup_terminates_the_shell() {
     let status = child.wait().unwrap();
     assert!(!status.success());
 }
+
+#[test]
+fn control_handle_works_while_a_write_is_blocked() {
+    // El hijo no lee: una escritura grande llena el búfer de la PTY y se bloquea.
+    // `exec`: el proceso que recibe SIGHUP es el propio `sleep`.
+    let pty = Pty::spawn("/bin/sh", &["-c", "exec sleep 3"], no_env(), 80, 24).unwrap();
+    let (_reader, writer, mut child) = pty.split().unwrap();
+    let control = writer.try_clone().unwrap();
+    let mut writer = writer;
+    // El hilo bloqueado no se espera: solo importa que el otro manejador responda.
+    std::thread::spawn(move || {
+        let _ = std::io::Write::write_all(&mut writer, &vec![b'x'; 4 << 20]);
+    });
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    // El otro manejador sigue respondiendo.
+    let start = std::time::Instant::now();
+    control.resize(100, 40).unwrap();
+    assert!(control.foreground_pgrp().is_some());
+    assert!(start.elapsed() < std::time::Duration::from_millis(500));
+    // No se espera al hijo: en macOS, un proceso que cierra la terminal con
+    // la cola de entrada llena se queda atascado al salir.
+    let _ = child.kill();
+}

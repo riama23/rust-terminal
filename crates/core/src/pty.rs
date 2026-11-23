@@ -187,6 +187,27 @@ impl PtyWriter {
 }
 
 impl PtyWriter {
+    /// Otro manejador del mismo maestro: uno puede escribir (y bloquearse)
+    /// mientras el otro cambia el tamaño o consulta el grupo en primer plano.
+    pub fn try_clone(&self) -> io::Result<PtyWriter> {
+        Ok(PtyWriter {
+            master: self.master.try_clone()?,
+        })
+    }
+
+    /// Espera hasta `timeout` a que la PTY admita más datos. Una escritura
+    /// pequeña después de que devuelva `true` no debería bloquearse mucho.
+    pub fn wait_writable(&self, timeout: std::time::Duration) -> bool {
+        use rustix::event::{PollFd, PollFlags, Timespec, poll};
+        let mut fds = [PollFd::new(&self.master, PollFlags::OUT)];
+        let ts = Timespec {
+            tv_sec: timeout.as_secs() as _,
+            tv_nsec: timeout.subsec_nanos() as _,
+        };
+        matches!(poll(&mut fds, Some(&ts)), Ok(n) if n > 0)
+            && fds[0].revents().contains(PollFlags::OUT)
+    }
+
     /// Grupo de procesos en primer plano de la terminal. Si no es el de la
     /// shell, hay un programa en marcha (vim, Claude Code, un `sleep`…).
     pub fn foreground_pgrp(&self) -> Option<u32> {

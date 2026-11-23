@@ -8,7 +8,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use objc2::sel;
@@ -33,7 +33,14 @@ pub enum AppEvent {
 pub struct Session {
     pub id: PaneId,
     pub term: Mutex<Term>,
-    writer: Mutex<PtyWriter>,
+    /// Cola hacia el hilo escritor: escribir en la PTY puede bloquearse (un
+    /// pegado grande con la aplicación ocupada) y no debe parar ni la interfaz
+    /// ni el lector.
+    input: mpsc::Sender<Vec<u8>>,
+    /// Manejador para el tamaño y las consultas, que no se bloquean.
+    control: Mutex<PtyWriter>,
+    /// El panel se cerró: el hilo escritor abandona lo pendiente.
+    closed: Arc<AtomicBool>,
     pid: u32,
     shell_name: String,
     /// El panel está en la pestaña activa.
@@ -73,6 +80,9 @@ impl Session {
         let args: Vec<&str> = opts.args.iter().map(String::as_str).collect();
         let pty = Pty::spawn_in(shell, &args, opts.env.iter().cloned(), opts.cwd, cols, rows)?;
         let (reader, writer, child) = pty.split()?;
+        let control = writer.try_clone()?;
+        let closed = Arc::new(AtomicBool::new(false));
+        let input = start_writer(id, writer, closed.clone());
         let session = Arc::new(Session {
             id,
             term: Mutex::new(Term::with_history_limit(
@@ -80,7 +90,9 @@ impl Session {
                 rows.into(),
                 opts.history_limit,
             )),
-            writer: Mutex::new(writer),
+            input,
+            control: Mutex::new(control),
+            closed,
             pid: child.id(),
             shell_name: shell.rsplit('/').next().unwrap_or(shell).to_owned(),
             visible: AtomicBool::new(true),
@@ -95,8 +107,8 @@ impl Session {
 
     /// Escribe en la PTY (teclas, pegado o respuestas a consultas).
     pub fn write(&self, bytes: &[u8]) {
-        if let Ok(mut w) = self.writer.lock() {
-            let _ = w.write_all(bytes);
+        if !bytes.is_empty() {
+            let _ = self.input.send(bytes.to_vec());
         }
     }
 
@@ -105,7 +117,11 @@ impl Session {
         let mut term = self.term.lock().unwrap();
         if term.grid().cols() != cols || term.grid().rows() != rows {
             term.resize(cols, rows);
-            let _ = self.writer.lock().unwrap().resize(cols as u16, rows as u16);
+            let _ = self
+                .control
+                .lock()
+                .unwrap()
+                .resize(cols as u16, rows as u16);
         }
     }
 
@@ -139,7 +155,7 @@ impl Session {
         if self.exited.load(SeqCst) {
             return false;
         }
-        let fg = self.writer.lock().unwrap().foreground_pgrp();
+        let fg = self.control.lock().unwrap().foreground_pgrp();
         if fg.is_some_and(|pgrp| pgrp != self.pid) {
             return true;
         }
@@ -187,8 +203,44 @@ impl Session {
 
     /// Cierra la sesión: la shell recibe SIGHUP y el lector termina solo.
     pub fn hangup(&self) {
+        self.closed.store(true, SeqCst);
         rust_terminal_core::hangup(self.pid);
     }
+}
+
+/// Hilo escritor: vacía la cola en la PTY en orden, en trozos pequeños y
+/// esperando a que haya sitio. Termina cuando la sesión se cierra (`closed`),
+/// se libera la cola o la PTY deja de aceptar datos; así nunca se queda
+/// bloqueado para siempre en un pegado enorme a un panel que ya no existe.
+fn start_writer(
+    id: PaneId,
+    mut writer: PtyWriter,
+    closed: Arc<AtomicBool>,
+) -> mpsc::Sender<Vec<u8>> {
+    const CHUNK: usize = 1024;
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    std::thread::Builder::new()
+        .name(format!("pty-writer-{id}"))
+        .spawn(move || {
+            for bytes in rx {
+                let mut rest = &bytes[..];
+                while !rest.is_empty() {
+                    if closed.load(SeqCst) {
+                        return;
+                    }
+                    if !writer.wait_writable(Duration::from_millis(100)) {
+                        continue;
+                    }
+                    match writer.write(&rest[..rest.len().min(CHUNK)]) {
+                        Ok(n) => rest = &rest[n..],
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(_) => return,
+                    }
+                }
+            }
+        })
+        .expect("hilo escritor");
+    tx
 }
 
 fn start_reader(session: Arc<Session>, mut reader: PtyReader, mut child: Child, waker: Arc<Waker>) {
