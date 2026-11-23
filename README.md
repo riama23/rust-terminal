@@ -7,6 +7,7 @@ Emulador de terminal para macOS escrito en Rust, pensado para trabajar con agent
 - **Rápido y nativo:** AppKit, Metal y Core Text, sin capas intermedias.
 - **Sin gasto en reposo:** si no cambia nada en pantalla, no se dibuja ningún frame.
 - **Buen anfitrión de aplicaciones de terminal:** colores de 24 bits, pantalla alternativa (vim, htop, less…), caracteres anchos (CJK y emoji) y pegado seguro (bracketed paste).
+- **Bloques de comandos:** con zsh, la terminal sabe dónde empieza y acaba cada comando y con qué código terminó. Puedes saltar entre comandos y copiar la salida del último.
 
 > **Estado:** en desarrollo, todavía no sirve para el uso diario. Mira [Limitaciones actuales](#limitaciones-actuales).
 
@@ -40,17 +41,24 @@ La terminal abre tu shell (`$SHELL`, o `/bin/zsh` si no está definida) como she
 
 | Acción | Atajo |
 |---|---|
+| Copiar la selección | Cmd+C |
+| Copiar la salida del último comando | Cmd+Shift+C |
 | Pegar | Cmd+V |
+| Ir al comando anterior / siguiente | Cmd+↑ / Cmd+↓ |
 | Salir | Cmd+Q |
+
+- **Historial:** desplázate con el trackpad o la rueda (hasta 10.000 líneas). Al escribir, la vista vuelve abajo. En programas a pantalla completa como `less` o `vim`, la rueda desplaza el documento.
+- **Selección:** arrastra para seleccionar, haz doble clic para seleccionar una palabra y triple clic para una línea. Shift+clic amplía la selección y Option+arrastrar selecciona un rectángulo.
+- **Bloques (solo zsh):** cada comando lleva una marca en el margen izquierdo, que sale roja si falló. Para eso la terminal añade una pequeña integración a zsh sin tocar tus archivos de configuración. Puedes desactivarla abriendo la app con la variable `RT_NO_SHELL_INTEGRATION=1`.
 
 - **Teclado:** Option escribe caracteres, como en el resto de macOS. En el teclado español, por ejemplo, Option+2 da `@`. Las teclas muertas (`´` y luego `e` → `é`) funcionan.
 - **Configuración:** la fuente es SF Mono de 13 pt y los colores son fijos. Ambas cosas se podrán configurar más adelante.
 
 ## Limitaciones actuales
 
-- No hay scrollback, selección con el ratón ni copiar con Cmd+C.
 - No hay pestañas ni paneles divididos.
-- Las aplicaciones no reciben eventos de ratón (clics ni rueda).
+- Las aplicaciones no reciben eventos de ratón; la rueda en `less` o `vim` funciona porque se envía como flechas.
+- Los bloques solo funcionan con zsh.
 - Mientras se escribe una tecla muerta no se ve nada hasta pulsar la segunda tecla.
 - No hay archivo de configuración.
 

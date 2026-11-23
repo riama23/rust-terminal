@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Workspace de Rust (edition 2024) con dos crates. Sus nombres son provisionales hasta que se decida el nombre del producto:
 
-- `crates/core` → `rust-terminal-core`: PTY (`pty`), cuadrícula con filas sucias (`grid`) y estado más parser `vte` (`term`). No puede depender de nada de interfaz ni de macOS más allá de POSIX. Incluye el binario `bench-core`.
+- `crates/core` → `rust-terminal-core`: PTY (`pty`), cuadrícula con historial, reflow y filas sucias (`grid`), estado más parser `vte` (`term`), bloques OSC 133 (`block`) y selección (`selection`). No puede depender de nada de interfaz ni de macOS más allá de POSIX. Incluye el binario `bench-core`.
 - `crates/app` → `rust-terminal`: la app de AppKit y Metal.
   - `main`: arranque de la app, menú y ventana. La ventana se crea en `applicationDidFinishLaunching:`.
   - `view`: `NSView` con `NSTextInputClient`, que se encarga del teclado, el pegado y el redimensionado.
@@ -15,6 +15,7 @@ Workspace de Rust (edition 2024) con dos crates. Sus nombres son provisionales h
   - `font`: Core Text.
   - `input`: codificación de teclas, pura y con tests.
   - `palette`: los colores.
+  - `shell`: inyección para zsh. Los scripts están en `crates/app/shell/zsh/`.
 
 El diseño de abajo está acordado con el usuario; los temas de "Abierto" no se deciden sin preguntar.
 
@@ -27,7 +28,10 @@ El diseño de abajo está acordado con el usuario; los temas de "Abierto" no se 
   - hilos con `CADisplayLink` y cero frames en reposo;
   - benchmarks propios;
   - el `.app`.
-- **M4:** scrollback, bloques con OSC 133 (y OSC 7) e inyección para zsh; selección con ratón, Cmd+C y scroll con trackpad.
+- **M4, implementado y en verificación manual** (lista en `docs/verificacion-m4.md`):
+  - scrollback de 10.000 líneas y reflow;
+  - bloques con OSC 133 y OSC 7, e inyección para zsh;
+  - selección con el ratón, Cmd+C, Cmd+Shift+C y scroll con el trackpad.
 - **M5:** pestañas y paneles.
 - **M6:** DEC 2026, Kitty keyboard, OSC 8 y 52, notificaciones y reporte de ratón (`?1000`/`?1002`/`?1006`).
 - **M7:** configuración TOML (fuente, colores, Option como Meta…).
@@ -41,13 +45,25 @@ El diseño de abajo está acordado con el usuario; los temas de "Abierto" no se 
   - El protocolo de `dirty`/`running` en `on_tick` y `Waker::request_frame` evita perder avisos; si se cambia, hay que conservar esa propiedad.
 - **macOS no dispara el display link si la ventana está tapada:** una ventana lanzada desde otra app que queda detrás no pinta hasta que se ve.
 
+**Historial y líneas absolutas (`grid.rs`):**
+- Las líneas tienen números absolutos (`Line`), que no cambian con el scroll. La selección y los bloques guardan `Point`s absolutos.
+- Al descartar líneas antiguas, `first_line` avanza. Los bloques terminados que quedan fuera se descartan, y la selección se anula.
+- **Reflow:** reconstruye las líneas lógicas y recoloca los puntos. Por eso, cualquier posición nueva que haya que conservar al redimensionar debe pasar por `Grid::resize_reflow`.
+- Si se redimensiona con el cursor en el prompt (entre las marcas A y C), el prompt se borra y lo redibuja la shell.
+- **Memoria medida:** 25,6 MiB para 10.000 líneas de unas 170 columnas (16 B por celda). El límite definitivo sigue abierto.
+
+**Integración con zsh (`crates/app/shell/zsh/`):**
+- Se inyecta con `ZDOTDIR` y restaura el del usuario.
+- Los hooks se colocan en el primer prompt, detrás de p10k: A en `precmd`, B en `zle-line-init` y C, con `cmdline_url`, en `preexec`.
+- D va dentro de `PROMPT_EOL_MARK`, porque zsh imprime la marca de `PROMPT_SP` antes que los `precmd`.
+- Los tests de `shell.rs` usan una zsh real con un `HOME` temporal; no deben cargar la configuración del usuario.
+
 **Pendiente en el núcleo:**
 - Los caracteres de ancho 0 (combinantes, ZWJ) se descartan.
 - Solo existe G0, con ASCII o gráficos de línea DEC. SO/SI no tienen efecto.
 - ED 3 se ignora hasta que exista el scrollback.
-- No hay reflow al redimensionar; llega con el scrollback.
 - macOS no acepta `O_CLOEXEC` en `posix_openpt`, así que se pone después con `fcntl`. Con varias sesiones (M5), un `fork` concurrente podría heredar el maestro de otra; hay que revisarlo entonces.
-- **Throughput inicial de `bench-core`:** 115–185 MiB/s, sin optimizar todavía.
+- **Throughput de `bench-core`:** 106–179 MiB/s. Con el historial, el texto plano bajó de unos 148 a unos 106 MiB/s, porque se compactan las filas y se reserva memoria en cada línea. Está pendiente de optimizar.
 
 **Pendiente en la app:**
 - El texto en composición no se dibuja: tras `´` no aparece nada hasta la segunda tecla.
@@ -117,5 +133,6 @@ Un **emulador de terminal para macOS** escrito en Rust (no una shell: por dentro
 - **Variables de depuración:**
   - `RT_LOG_UNHANDLED=1`: muestra en stderr las secuencias que el núcleo ignora.
   - `RT_FRAME_STATS=1`: muestra los frames por segundo.
+  - `RT_NO_SHELL_INTEGRATION=1`: desactiva la inyección para zsh.
 
 Rust está instalado con rustup en `~/.cargo/bin`. Si `cargo` no aparece en el PATH de un shell no interactivo, ejecuta antes `. "$HOME/.cargo/env"`.
