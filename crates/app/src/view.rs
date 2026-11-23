@@ -1,37 +1,68 @@
-//! La vista de la terminal: entrada de teclado (con `NSTextInputClient` para
-//! teclas muertas y Option), pegado, ratón (selección y scroll), copiar,
-//! navegación por bloques y cambios de tamaño o de escala.
+//! La vista de una ventana: pestañas, paneles y sus sesiones.
+//!
+//! - **Teclado:** va al panel con el foco. `NSTextInputClient` resuelve las
+//!   teclas muertas y Option.
+//! - **Ratón:** barra de pestañas, divisores, foco, selección y scroll.
+//! - **Layout:** se calcula aquí (hilo principal) y se publica para el render
+//!   como un [`WindowFrame`].
 
 use std::cell::{Cell, OnceCell, RefCell};
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::Ordering::SeqCst;
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, Sel};
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSEvent, NSEventModifierFlags, NSPasteboard, NSPasteboardTypeString, NSResponder,
-    NSTextInputClient, NSView,
+    NSAlert, NSAlertFirstButtonReturn, NSApplication, NSEvent, NSEventModifierFlags, NSMenuItem,
+    NSPasteboard, NSPasteboardTypeString, NSResponder, NSTextInputClient, NSView,
 };
 use objc2_core_foundation::CGSize;
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSAttributedString, NSAttributedStringKey, NSNotFound, NSPoint,
     NSRange, NSRect, NSSize, NSString, NSUInteger,
 };
-
 use rust_terminal_core::selection;
 use rust_terminal_core::{Selection, SelectionKind};
 
 use crate::font::{self, Metrics};
 use crate::input::{self, Mods};
-use crate::renderer::Layout;
-use crate::session::{Shared, Waker};
+use crate::renderer::{Layout, TabBar, TabItem};
+use crate::session::Session;
+use crate::window::{PaneSlot, Waker, WindowFrame, WindowShared};
+use crate::workspace::{Axis, Direction, Divider, PaneId, Rect, Workspace};
 
-/// Margen interior alrededor de la cuadrícula, en puntos.
+/// Margen interior de cada panel, en puntos.
 pub const PAD_PT: f64 = 6.0;
 
+/// Geometría calculada en el último layout, en píxeles, para el ratón.
+#[derive(Default)]
+struct Geometry {
+    scale: f64,
+    metrics: Option<Metrics>,
+    pad: f64,
+    tab_bar: Option<TabBar>,
+    panes: Vec<(PaneId, Rect)>,
+    dividers: Vec<Divider>,
+}
+
+/// Qué se está arrastrando con el ratón.
+enum Drag {
+    Divider(Divider),
+    Select(PaneId),
+}
+
 pub struct ViewIvars {
-    shared: Arc<Shared>,
+    window: Arc<WindowShared>,
     waker: OnceCell<Arc<Waker>>,
+    shell: String,
+    env: Vec<(String, String)>,
+    workspace: RefCell<Option<Workspace>>,
+    sessions: RefCell<HashMap<PaneId, Arc<Session>>>,
+    next_id: Cell<PaneId>,
+    geometry: RefCell<Geometry>,
+    drag: RefCell<Option<Drag>>,
     /// Texto en composición (tecla muerta o método de entrada).
     marked: RefCell<String>,
     /// Métricas para la escala actual, para no recalcularlas en cada resize.
@@ -76,21 +107,25 @@ define_class!(
             self.update_layout();
         }
 
+        // --- Edición ---
+
         #[unsafe(method(paste:))]
         fn paste(&self, _sender: Option<&AnyObject>) {
             // SAFETY: lectura del portapapeles general en el hilo principal.
             let text = unsafe {
                 NSPasteboard::generalPasteboard().stringForType(NSPasteboardTypeString)
             };
-            if let Some(text) = text {
-                let bracketed = self.ivars().shared.term.lock().unwrap().modes().bracketed_paste;
+            if let (Some(text), Some(s)) = (text, self.focused_session()) {
+                let bracketed = s.term.lock().unwrap().modes().bracketed_paste;
                 self.send_input(&input::encode_paste(&text.to_string(), bracketed));
             }
         }
 
         #[unsafe(method(copy:))]
         fn copy(&self, _sender: Option<&AnyObject>) {
-            let text = self.ivars().shared.term.lock().unwrap().selection_text();
+            let text = self
+                .focused_session()
+                .and_then(|s| s.term.lock().unwrap().selection_text());
             if let Some(text) = text.filter(|t| !t.is_empty()) {
                 copy_to_pasteboard(&text);
             }
@@ -99,19 +134,21 @@ define_class!(
         /// Copia la salida del último comando terminado (bloques OSC 133).
         #[unsafe(method(copyLastOutput:))]
         fn copy_last_output(&self, _sender: Option<&AnyObject>) {
-            let text = {
-                let term = self.ivars().shared.term.lock().unwrap();
+            let text = self.focused_session().and_then(|s| {
+                let term = s.term.lock().unwrap();
                 term.last_finished_block().and_then(|b| term.block_output(b))
-            };
+            });
             if let Some(text) = text {
                 copy_to_pasteboard(&text);
             }
         }
 
+        // --- Bloques ---
+
         #[unsafe(method(previousBlock:))]
         fn previous_block(&self, _sender: Option<&AnyObject>) {
-            {
-                let mut term = self.ivars().shared.term.lock().unwrap();
+            if let Some(s) = self.focused_session() {
+                let mut term = s.term.lock().unwrap();
                 let top = term.visible_line(0);
                 let target = term.blocks().iter().rev().map(|b| b.prompt.line).find(|&l| l < top);
                 if let Some(line) = target {
@@ -123,8 +160,8 @@ define_class!(
 
         #[unsafe(method(nextBlock:))]
         fn next_block(&self, _sender: Option<&AnyObject>) {
-            {
-                let mut term = self.ivars().shared.term.lock().unwrap();
+            if let Some(s) = self.focused_session() {
+                let mut term = s.term.lock().unwrap();
                 let top = term.visible_line(0);
                 let target = term.blocks().iter().map(|b| b.prompt.line).find(|&l| l > top);
                 match target {
@@ -134,6 +171,82 @@ define_class!(
             }
             self.request_frame();
         }
+
+        // --- Pestañas y paneles ---
+
+        #[unsafe(method(newTab:))]
+        fn new_tab_action(&self, _sender: Option<&AnyObject>) {
+            self.new_tab();
+        }
+
+        #[unsafe(method(splitVertical:))]
+        fn split_vertical(&self, _sender: Option<&AnyObject>) {
+            self.split(Axis::Columns);
+        }
+
+        #[unsafe(method(splitHorizontal:))]
+        fn split_horizontal(&self, _sender: Option<&AnyObject>) {
+            self.split(Axis::Rows);
+        }
+
+        /// Cmd+W: cierra el panel con el foco (y la pestaña si era el último).
+        #[unsafe(method(closePane:))]
+        fn close_pane_action(&self, _sender: Option<&AnyObject>) {
+            if let Some(s) = self.focused_session()
+                && self.confirm_close(std::slice::from_ref(&s), "este panel")
+            {
+                self.close_pane(s.id);
+            }
+        }
+
+        #[unsafe(method(closeTab:))]
+        fn close_tab_action(&self, _sender: Option<&AnyObject>) {
+            let index = self.with_workspace(|w| w.active);
+            self.close_tab(index);
+        }
+
+        #[unsafe(method(selectTab:))]
+        fn select_tab_action(&self, sender: Option<&AnyObject>) {
+            let tag = sender
+                .and_then(|s| s.downcast_ref::<NSMenuItem>())
+                .map_or(1, |item| item.tag());
+            self.with_workspace_mut(|w| w.select((tag.max(1) - 1) as usize));
+            self.update_layout();
+        }
+
+        #[unsafe(method(nextTab:))]
+        fn next_tab(&self, _sender: Option<&AnyObject>) {
+            self.with_workspace_mut(Workspace::next);
+            self.update_layout();
+        }
+
+        #[unsafe(method(previousTab:))]
+        fn previous_tab(&self, _sender: Option<&AnyObject>) {
+            self.with_workspace_mut(Workspace::previous);
+            self.update_layout();
+        }
+
+        #[unsafe(method(focusLeft:))]
+        fn focus_left(&self, _sender: Option<&AnyObject>) {
+            self.move_focus(Direction::Left);
+        }
+
+        #[unsafe(method(focusRight:))]
+        fn focus_right(&self, _sender: Option<&AnyObject>) {
+            self.move_focus(Direction::Right);
+        }
+
+        #[unsafe(method(focusUp:))]
+        fn focus_up(&self, _sender: Option<&AnyObject>) {
+            self.move_focus(Direction::Up);
+        }
+
+        #[unsafe(method(focusDown:))]
+        fn focus_down(&self, _sender: Option<&AnyObject>) {
+            self.move_focus(Direction::Down);
+        }
+
+        // --- Ratón ---
 
         #[unsafe(method(scrollWheel:))]
         fn scroll_wheel(&self, event: &NSEvent) {
@@ -151,9 +264,12 @@ define_class!(
         }
 
         #[unsafe(method(mouseUp:))]
-        fn mouse_up(&self, event: &NSEvent) {
-            if !self.ivars().drag_moved.get() {
-                self.ivars().shared.term.lock().unwrap().set_selection(None);
+        fn mouse_up(&self, _event: &NSEvent) {
+            if let Some(Drag::Select(id)) = self.ivars().drag.borrow_mut().take()
+                && !self.ivars().drag_moved.get()
+                && let Some(s) = self.session(id)
+            {
+                s.term.lock().unwrap().set_selection(None);
                 self.request_frame();
             }
         }
@@ -251,10 +367,23 @@ fn text_of(obj: &AnyObject) -> String {
 }
 
 impl TerminalView {
-    pub fn new(mtm: MainThreadMarker, frame: NSRect, shared: Arc<Shared>) -> Retained<Self> {
+    pub fn new(
+        mtm: MainThreadMarker,
+        frame: NSRect,
+        window: Arc<WindowShared>,
+        shell: String,
+        env: Vec<(String, String)>,
+    ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(ViewIvars {
-            shared,
+            window,
             waker: OnceCell::new(),
+            shell,
+            env,
+            workspace: RefCell::new(None),
+            sessions: RefCell::new(HashMap::new()),
+            next_id: Cell::new(1),
+            geometry: RefCell::new(Geometry::default()),
+            drag: RefCell::new(None),
             marked: RefCell::new(String::new()),
             metrics: Cell::new(None),
             scroll_accum: Cell::new(0.0),
@@ -264,8 +393,48 @@ impl TerminalView {
         unsafe { msg_send![super(this), initWithFrame: frame] }
     }
 
-    pub fn set_waker(&self, waker: Arc<Waker>) {
+    /// Arranca la primera sesión cuando el render ya existe.
+    pub fn start(&self, waker: Arc<Waker>) {
         let _ = self.ivars().waker.set(waker);
+        let id = self.alloc_id();
+        *self.ivars().workspace.borrow_mut() = Some(Workspace::new(id));
+        if !self.spawn_session(id, None) {
+            NSApplication::sharedApplication(self.mtm()).terminate(None);
+            return;
+        }
+        self.update_layout();
+    }
+
+    // --- Acceso al estado ---
+
+    fn with_workspace<R>(&self, f: impl FnOnce(&Workspace) -> R) -> R {
+        f(self.ivars().workspace.borrow().as_ref().expect("workspace"))
+    }
+
+    fn with_workspace_mut<R>(&self, f: impl FnOnce(&mut Workspace) -> R) -> R {
+        f(self
+            .ivars()
+            .workspace
+            .borrow_mut()
+            .as_mut()
+            .expect("workspace"))
+    }
+
+    fn session(&self, id: PaneId) -> Option<Arc<Session>> {
+        self.ivars().sessions.borrow().get(&id).cloned()
+    }
+
+    fn focused_session(&self) -> Option<Arc<Session>> {
+        if self.ivars().workspace.borrow().is_none() {
+            return None;
+        }
+        self.session(self.with_workspace(Workspace::focused))
+    }
+
+    fn alloc_id(&self) -> PaneId {
+        let id = self.ivars().next_id.get();
+        self.ivars().next_id.set(id + 1);
+        id
     }
 
     fn request_frame(&self) {
@@ -285,107 +454,341 @@ impl TerminalView {
         }
     }
 
-    /// Recalcula tamaño en píxeles, columnas y filas; ajusta el layer, el
-    /// núcleo y la PTY, y pide un frame.
-    pub fn update_layout(&self) {
-        let Some(window) = self.window() else {
-            return;
+    // --- Sesiones ---
+
+    /// Lanza la shell de un panel nuevo en `cwd` con el tamaño que le toca
+    /// en el layout actual. Devuelve `false` si no se pudo.
+    fn spawn_session(&self, id: PaneId, cwd: Option<std::path::PathBuf>) -> bool {
+        let (cols, rows) = self.compute_geometry().map_or((80, 24), |g| {
+            g.panes
+                .iter()
+                .find(|(p, _)| *p == id)
+                .map_or((80, 24), |(_, r)| pane_dims(*r, &g))
+        });
+        let Some(waker) = self.ivars().waker.get().cloned() else {
+            return false;
         };
+        let ivars = self.ivars();
+        match Session::spawn(
+            id,
+            &ivars.shell,
+            &ivars.env,
+            cwd.as_deref(),
+            cols as u16,
+            rows as u16,
+            waker,
+        ) {
+            Ok(session) => {
+                ivars.sessions.borrow_mut().insert(id, session);
+                true
+            }
+            Err(e) => {
+                eprintln!("no se pudo lanzar la shell: {e}");
+                false
+            }
+        }
+    }
+
+    fn new_tab(&self) {
+        let cwd = self.focused_session().and_then(|s| s.cwd());
+        let id = self.alloc_id();
+        self.with_workspace_mut(|w| w.new_tab(id));
+        if !self.spawn_session(id, cwd) {
+            self.with_workspace_mut(|w| w.close_pane(id));
+        }
+        self.update_layout();
+    }
+
+    fn split(&self, axis: Axis) {
+        let cwd = self.focused_session().and_then(|s| s.cwd());
+        let id = self.alloc_id();
+        self.with_workspace_mut(|w| {
+            let target = w.focused();
+            w.tab_mut().split(target, axis, id);
+        });
+        if !self.spawn_session(id, cwd) {
+            self.with_workspace_mut(|w| w.close_pane(id));
+        }
+        self.update_layout();
+    }
+
+    fn move_focus(&self, dir: Direction) {
+        let changed = self.with_workspace_mut(|w| {
+            let next = w.tab().neighbor(dir);
+            if let Some(next) = next {
+                w.tab_mut().focused = next;
+            }
+            next.is_some()
+        });
+        if changed {
+            self.update_layout();
+        }
+    }
+
+    /// Pide confirmación si alguna de las sesiones tiene un programa en marcha.
+    fn confirm_close(&self, sessions: &[Arc<Session>], what: &str) -> bool {
+        if !sessions.iter().any(|s| s.is_busy()) {
+            return true;
+        }
+        let alert = NSAlert::new(self.mtm());
+        alert.setMessageText(&NSString::from_str(&format!("¿Cerrar {what}?")));
+        alert.setInformativeText(&NSString::from_str(
+            "Hay un programa en marcha. Si cierras, se terminará.",
+        ));
+        alert.addButtonWithTitle(&NSString::from_str("Cerrar"));
+        alert.addButtonWithTitle(&NSString::from_str("Cancelar"));
+        alert.runModal() == NSAlertFirstButtonReturn
+    }
+
+    /// Confirmación al salir de la app (Cmd+Q).
+    pub fn confirm_quit(&self) -> bool {
+        let sessions: Vec<_> = self.ivars().sessions.borrow().values().cloned().collect();
+        self.confirm_close(&sessions, "todas las pestañas")
+    }
+
+    fn close_pane(&self, id: PaneId) {
+        if let Some(s) = self.ivars().sessions.borrow_mut().remove(&id) {
+            s.hangup();
+        }
+        let remaining = self.with_workspace_mut(|w| w.close_pane(id));
+        if remaining {
+            self.update_layout();
+        } else {
+            NSApplication::sharedApplication(self.mtm()).terminate(None);
+        }
+    }
+
+    fn close_tab(&self, index: usize) {
+        let panes = self.with_workspace(|w| w.tabs.get(index).map(|t| t.panes()));
+        let Some(panes) = panes else { return };
+        let sessions: Vec<_> = panes.iter().filter_map(|p| self.session(*p)).collect();
+        if !self.confirm_close(&sessions, "esta pestaña") {
+            return;
+        }
+        for s in &sessions {
+            self.ivars().sessions.borrow_mut().remove(&s.id);
+            s.hangup();
+        }
+        if self.with_workspace_mut(|w| w.close_tab(index)) {
+            self.update_layout();
+        } else {
+            NSApplication::sharedApplication(self.mtm()).terminate(None);
+        }
+    }
+
+    /// Una sesión cambió de título o terminó: se quitan sus paneles y se
+    /// rehace el layout (títulos incluidos).
+    pub fn sessions_changed(&self) {
+        let exited: Vec<PaneId> = self
+            .ivars()
+            .sessions
+            .borrow()
+            .values()
+            .filter(|s| s.exited.load(SeqCst))
+            .map(|s| s.id)
+            .collect();
+        for id in exited {
+            self.ivars().sessions.borrow_mut().remove(&id);
+            if !self.with_workspace_mut(|w| w.close_pane(id)) {
+                NSApplication::sharedApplication(self.mtm()).terminate(None);
+                return;
+            }
+        }
+        self.update_layout();
+    }
+
+    // --- Layout ---
+
+    /// Rectángulos de la barra y de los paneles para el tamaño actual.
+    fn compute_geometry(&self) -> Option<Geometry> {
+        let window = self.window()?;
+        let workspace = self.ivars().workspace.borrow();
+        let workspace = workspace.as_ref()?;
         let scale = window.backingScaleFactor();
         let size = self.bounds().size;
         let m = self.metrics_for(scale);
-        let width_px = (size.width * scale).round().max(1.0) as u32;
-        let height_px = (size.height * scale).round().max(1.0) as u32;
-        let pad_px = (PAD_PT * scale).round() as u32;
-        let cols = (width_px.saturating_sub(2 * pad_px) / m.cell_w).max(1) as usize;
-        let rows = (height_px.saturating_sub(2 * pad_px) / m.cell_h).max(1) as usize;
+        let w = (size.width * scale).round().max(1.0);
+        let h = (size.height * scale).round().max(1.0);
+        let (cw, ch) = (m.cell_w as f64, m.cell_h as f64);
 
-        let shared = &self.ivars().shared;
-        {
-            let layer = shared.layer.lock();
-            layer.setContentsScale(scale);
-            layer.setDrawableSize(CGSize::new(width_px as f64, height_px as f64));
-        }
-        *shared.layout.lock().unwrap() = Layout {
-            scale,
-            width_px,
-            height_px,
-            pad_px,
+        // Barra de pestañas.
+        let bar_h = (ch * 1.8).round();
+        let n = workspace.tabs.len() as f64;
+        let plus_w = bar_h;
+        let tab_w = ((w - plus_w) / n).min(cw * 28.0).floor();
+        let close_w = (cw * 2.5).round();
+        let sessions = self.ivars().sessions.borrow();
+        let tabs = workspace
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(i, tab)| {
+                let x = i as f64 * tab_w;
+                let title = sessions
+                    .get(&tab.focused)
+                    .map(|s| s.title())
+                    .unwrap_or_default();
+                TabItem {
+                    title,
+                    rect: [x as f32, 0.0, tab_w as f32, bar_h as f32],
+                    close: [
+                        (x + tab_w - close_w) as f32,
+                        0.0,
+                        close_w as f32,
+                        bar_h as f32,
+                    ],
+                    active: i == workspace.active,
+                }
+            })
+            .collect();
+        let tab_bar = TabBar {
+            rect: [0.0, 0.0, w as f32, bar_h as f32],
+            tabs,
+            plus: [(n * tab_w) as f32, 0.0, plus_w as f32, bar_h as f32],
         };
+
+        let area = Rect {
+            x: 0.0,
+            y: bar_h,
+            w,
+            h: (h - bar_h).max(1.0),
+        };
+        let (panes, dividers) = workspace.tab().layout(area, scale.round().max(1.0));
+        Some(Geometry {
+            scale,
+            metrics: Some(m),
+            pad: (PAD_PT * scale).round(),
+            tab_bar: Some(tab_bar),
+            panes,
+            dividers,
+        })
+    }
+
+    /// Recalcula el layout, ajusta el layer y el tamaño de cada sesión
+    /// visible, lo publica para el render y pide un frame.
+    pub fn update_layout(&self) {
+        let Some(g) = self.compute_geometry() else {
+            return;
+        };
+        let size = self.bounds().size;
+        let (w, h) = (
+            (size.width * g.scale).round().max(1.0),
+            (size.height * g.scale).round().max(1.0),
+        );
         {
-            let mut term = shared.term.lock().unwrap();
-            if term.grid().cols() != cols || term.grid().rows() != rows {
-                term.resize(cols, rows);
-                let _ = shared
-                    .writer
-                    .lock()
-                    .unwrap()
-                    .resize(cols as u16, rows as u16);
-            }
+            let layer = self.ivars().window.layer.lock();
+            layer.setContentsScale(g.scale);
+            layer.setDrawableSize(CGSize::new(w, h));
+        }
+
+        let focused = self.with_workspace(Workspace::focused);
+        let sessions = self.ivars().sessions.borrow();
+        let mut slots = Vec::new();
+        for (id, r) in &g.panes {
+            let Some(s) = sessions.get(id) else { continue };
+            let (cols, rows) = pane_dims(*r, &g);
+            s.resize(cols, rows);
+            slots.push(PaneSlot {
+                session: s.clone(),
+                rect: [r.x as f32, r.y as f32, r.w as f32, r.h as f32],
+                pad: g.pad as f32,
+                focused: *id == focused,
+            });
+        }
+        for s in sessions.values() {
+            let visible = g.panes.iter().any(|(id, _)| *id == s.id);
+            s.visible.store(visible, SeqCst);
+        }
+        let title = sessions.get(&focused).map(|s| s.title());
+        drop(sessions);
+
+        *self.ivars().window.frame.lock().unwrap() = Some(WindowFrame {
+            layout: Layout {
+                scale: g.scale,
+                width_px: w as u32,
+                height_px: h as u32,
+            },
+            panes: slots,
+            dividers: g
+                .dividers
+                .iter()
+                .map(|d| {
+                    [
+                        d.rect.x as f32,
+                        d.rect.y as f32,
+                        d.rect.w as f32,
+                        d.rect.h as f32,
+                    ]
+                })
+                .collect(),
+            tab_bar: g.tab_bar.clone(),
+        });
+        *self.ivars().geometry.borrow_mut() = g;
+        if let (Some(title), Some(window)) = (title, self.window()) {
+            window.setTitle(&NSString::from_str(&title));
         }
         self.request_frame();
     }
 
-    /// Rectángulo del cursor en coordenadas de pantalla, para situar la
-    /// ventana de composición de los métodos de entrada.
-    fn cursor_screen_rect(&self) -> NSRect {
-        let Some(window) = self.window() else {
-            return NSRect::ZERO;
-        };
-        let scale = window.backingScaleFactor();
-        let m = self.metrics_for(scale);
-        let cursor = self.ivars().shared.term.lock().unwrap().cursor();
-        let (cw, ch) = (m.cell_w as f64 / scale, m.cell_h as f64 / scale);
-        let height = self.bounds().size.height;
-        let rect = NSRect::new(
-            NSPoint::new(
-                PAD_PT + cursor.col as f64 * cw,
-                height - PAD_PT - (cursor.row + 1) as f64 * ch,
-            ),
-            NSSize::new(cw, ch),
-        );
-        let in_window = self.convertRect_toView(rect, None);
-        window.convertRectToScreen(in_window)
-    }
+    // --- Entrada ---
 
-    /// Envía entrada del usuario a la PTY y vuelve la vista abajo del todo.
+    /// Envía entrada del usuario al panel con el foco y vuelve su vista abajo.
     fn send_input(&self, bytes: &[u8]) {
-        let shared = &self.ivars().shared;
+        let Some(s) = self.focused_session() else {
+            return;
+        };
         let moved = {
-            let mut term = shared.term.lock().unwrap();
+            let mut term = s.term.lock().unwrap();
             let moved = term.display_offset() > 0;
             term.scroll_to_bottom();
             moved
         };
-        shared.write(bytes);
+        s.write(bytes);
         if moved {
             self.request_frame();
         }
     }
 
-    /// Tamaño de la celda en puntos.
-    fn cell_size_pt(&self) -> (f64, f64) {
-        let scale = self.window().map_or(2.0, |w| w.backingScaleFactor());
-        let m = self.metrics_for(scale);
-        (m.cell_w as f64 / scale, m.cell_h as f64 / scale)
+    /// Posición del ratón en píxeles de la vista (origen arriba a la izquierda).
+    fn mouse_px(&self, event: &NSEvent) -> (f64, f64) {
+        let p = self.convertPoint_fromView(event.locationInWindow(), None);
+        let scale = self.ivars().geometry.borrow().scale.max(1.0);
+        (p.x * scale, (self.bounds().size.height - p.y) * scale)
     }
 
-    /// Fila y columna de la vista bajo el ratón, sin limitar (la fila puede
-    /// ser negativa o pasar del final al arrastrar fuera de la ventana).
-    fn cell_at(&self, event: &NSEvent) -> (isize, usize) {
-        let p = self.convertPoint_fromView(event.locationInWindow(), None);
-        let (cw, ch) = self.cell_size_pt();
-        let y = self.bounds().size.height - p.y - PAD_PT;
-        let row = (y / ch).floor() as isize;
-        let col = ((p.x - PAD_PT) / cw).floor().max(0.0) as usize;
+    /// Panel bajo el punto y su rectángulo.
+    fn pane_at(&self, x: f64, y: f64) -> Option<(PaneId, Rect)> {
+        let g = self.ivars().geometry.borrow();
+        g.panes.iter().find(|(_, r)| r.contains(x, y)).copied()
+    }
+
+    /// Fila y columna de un panel bajo el punto, sin limitar la fila (puede
+    /// ser negativa o pasar del final al arrastrar fuera del panel).
+    fn cell_in(&self, r: Rect, x: f64, y: f64) -> (isize, usize) {
+        let g = self.ivars().geometry.borrow();
+        let Some(m) = g.metrics else { return (0, 0) };
+        let row = ((y - r.y - g.pad) / m.cell_h as f64).floor() as isize;
+        let col = ((x - r.x - g.pad) / m.cell_w as f64).floor().max(0.0) as usize;
         (row, col)
     }
 
     fn handle_scroll(&self, event: &NSEvent) {
-        let (_, ch) = self.cell_size_pt();
+        let (x, y) = self.mouse_px(event);
+        let Some(s) = self
+            .pane_at(x, y)
+            .and_then(|(id, _)| self.session(id))
+            .or_else(|| self.focused_session())
+        else {
+            return;
+        };
+        let ch_pt = {
+            let g = self.ivars().geometry.borrow();
+            g.metrics
+                .map_or(16.0, |m| m.cell_h as f64 / g.scale.max(1.0))
+        };
         let dy = event.scrollingDeltaY();
         let lines = if event.hasPreciseScrollingDeltas() {
-            let acc = self.ivars().scroll_accum.get() + dy / ch;
+            let acc = self.ivars().scroll_accum.get() + dy / ch_pt;
             let whole = acc.trunc();
             self.ivars().scroll_accum.set(acc - whole);
             whole as isize
@@ -395,8 +798,7 @@ impl TerminalView {
         if lines == 0 {
             return;
         }
-        let shared = &self.ivars().shared;
-        let mut term = shared.term.lock().unwrap();
+        let mut term = s.term.lock().unwrap();
         let modes = term.modes();
         if modes.alt_screen {
             // En la pantalla alternativa (less, vim…) la rueda envía flechas.
@@ -407,7 +809,7 @@ impl TerminalView {
                 input::Key::Down
             };
             let bytes = input::encode_key(key, Mods::default(), modes.app_cursor);
-            shared.write(&bytes.repeat(lines.unsigned_abs()));
+            s.write(&bytes.repeat(lines.unsigned_abs()));
         } else {
             term.scroll_display(lines);
             drop(term);
@@ -416,11 +818,71 @@ impl TerminalView {
     }
 
     fn handle_mouse_down(&self, event: &NSEvent) {
+        let (x, y) = self.mouse_px(event);
+
+        // Barra de pestañas.
+        let bar = self.ivars().geometry.borrow().tab_bar.clone();
+        if let Some(bar) = bar
+            && y < bar.rect[3] as f64
+        {
+            let inside = |r: [f32; 4]| {
+                x >= r[0] as f64
+                    && x < (r[0] + r[2]) as f64
+                    && y >= r[1] as f64
+                    && y < (r[1] + r[3]) as f64
+            };
+            if inside(bar.plus) {
+                self.new_tab();
+            } else if let Some(i) = bar.tabs.iter().position(|t| inside(t.rect)) {
+                if inside(bar.tabs[i].close) {
+                    self.close_tab(i);
+                } else {
+                    self.with_workspace_mut(|w| w.select(i));
+                    self.update_layout();
+                }
+            }
+            return;
+        }
+
+        // Divisor (con un margen para que sea fácil de agarrar).
+        let grab = self.ivars().geometry.borrow().scale * 4.0;
+        let divider = self
+            .ivars()
+            .geometry
+            .borrow()
+            .dividers
+            .iter()
+            .find(|d| {
+                let r = d.rect;
+                match d.axis {
+                    Axis::Columns => {
+                        (x - (r.x + r.w / 2.0)).abs() <= grab && y >= r.y && y < r.y + r.h
+                    }
+                    Axis::Rows => {
+                        (y - (r.y + r.h / 2.0)).abs() <= grab && x >= r.x && x < r.x + r.w
+                    }
+                }
+            })
+            .cloned();
+        if let Some(d) = divider {
+            *self.ivars().drag.borrow_mut() = Some(Drag::Divider(d));
+            return;
+        }
+
+        // Panel: foco y selección.
+        let Some((id, rect)) = self.pane_at(x, y) else {
+            return;
+        };
+        if self.with_workspace(Workspace::focused) != id {
+            self.with_workspace_mut(|w| w.tab_mut().focused = id);
+            self.update_layout();
+        }
+        let Some(s) = self.session(id) else { return };
         let flags = event.modifierFlags();
-        let (row, col) = self.cell_at(event);
+        let (row, col) = self.cell_in(rect, x, y);
         let clicks = event.clickCount();
         {
-            let mut term = self.ivars().shared.term.lock().unwrap();
+            let mut term = s.term.lock().unwrap();
             let rows = term.grid().rows() as isize;
             let line = term.visible_line(row.clamp(0, rows - 1) as usize);
             let at = selection::point(line, col);
@@ -439,6 +901,7 @@ impl TerminalView {
             };
             term.set_selection(Some(selection));
         }
+        *self.ivars().drag.borrow_mut() = Some(Drag::Select(id));
         // Doble y triple clic seleccionan sin necesidad de arrastrar.
         self.ivars()
             .drag_moved
@@ -447,24 +910,76 @@ impl TerminalView {
     }
 
     fn handle_mouse_dragged(&self, event: &NSEvent) {
-        let (row, col) = self.cell_at(event);
-        {
-            let mut term = self.ivars().shared.term.lock().unwrap();
-            let rows = term.grid().rows() as isize;
-            // Arrastrar por encima o por debajo desplaza la vista.
-            if row < 0 {
-                term.scroll_display(1);
-            } else if row >= rows {
-                term.scroll_display(-1);
+        let (x, y) = self.mouse_px(event);
+        let drag = self.ivars().drag.borrow();
+        match drag.as_ref() {
+            Some(Drag::Divider(d)) => {
+                let d = d.clone();
+                drop(drag);
+                let pos = match d.axis {
+                    Axis::Columns => x,
+                    Axis::Rows => y,
+                };
+                self.with_workspace_mut(|w| w.tab_mut().drag_divider(&d, pos));
+                self.update_layout();
             }
-            let line = term.visible_line(row.clamp(0, rows - 1) as usize);
-            if let Some(mut sel) = term.selection() {
-                sel.head = selection::point(line, col);
-                term.set_selection(Some(sel));
+            Some(Drag::Select(id)) => {
+                let id = *id;
+                drop(drag);
+                let rect = self
+                    .ivars()
+                    .geometry
+                    .borrow()
+                    .panes
+                    .iter()
+                    .find(|(p, _)| *p == id)
+                    .map(|(_, r)| *r);
+                let (Some(rect), Some(s)) = (rect, self.session(id)) else {
+                    return;
+                };
+                let (row, col) = self.cell_in(rect, x, y);
+                {
+                    let mut term = s.term.lock().unwrap();
+                    let rows = term.grid().rows() as isize;
+                    // Arrastrar por encima o por debajo desplaza la vista.
+                    if row < 0 {
+                        term.scroll_display(1);
+                    } else if row >= rows {
+                        term.scroll_display(-1);
+                    }
+                    let line = term.visible_line(row.clamp(0, rows - 1) as usize);
+                    if let Some(mut sel) = term.selection() {
+                        sel.head = selection::point(line, col);
+                        term.set_selection(Some(sel));
+                    }
+                }
+                self.ivars().drag_moved.set(true);
+                self.request_frame();
             }
+            None => {}
         }
-        self.ivars().drag_moved.set(true);
-        self.request_frame();
+    }
+
+    /// Rectángulo del cursor del panel con el foco en coordenadas de
+    /// pantalla, para situar la ventana de composición de los métodos de entrada.
+    fn cursor_screen_rect(&self) -> NSRect {
+        let (Some(window), Some(s)) = (self.window(), self.focused_session()) else {
+            return NSRect::ZERO;
+        };
+        let g = self.ivars().geometry.borrow();
+        let (Some(m), Some((_, r))) = (g.metrics, g.panes.iter().find(|(p, _)| *p == s.id)) else {
+            return NSRect::ZERO;
+        };
+        let cursor = s.term.lock().unwrap().cursor();
+        let scale = g.scale.max(1.0);
+        let x_px = r.x + g.pad + cursor.col as f64 * m.cell_w as f64;
+        let y_px = r.y + g.pad + (cursor.row + 1) as f64 * m.cell_h as f64;
+        let rect = NSRect::new(
+            NSPoint::new(x_px / scale, self.bounds().size.height - y_px / scale),
+            NSSize::new(m.cell_w as f64 / scale, m.cell_h as f64 / scale),
+        );
+        let in_window = self.convertRect_toView(rect, None);
+        window.convertRectToScreen(in_window)
     }
 
     fn handle_key(&self, event: &NSEvent) {
@@ -475,12 +990,13 @@ impl TerminalView {
             ctrl: flags.contains(NSEventModifierFlags::Control),
         };
         let cmd = flags.contains(NSEventModifierFlags::Command);
-        let shared = &self.ivars().shared;
         let composing = !self.ivars().marked.borrow().is_empty();
 
         if !composing && !cmd {
             if let Some(key) = input::key_from_keycode(event.keyCode()) {
-                let app_cursor = shared.term.lock().unwrap().modes().app_cursor;
+                let app_cursor = self
+                    .focused_session()
+                    .is_some_and(|s| s.term.lock().unwrap().modes().app_cursor);
                 self.send_input(&input::encode_key(key, mods, app_cursor));
                 return;
             }
@@ -504,4 +1020,12 @@ impl TerminalView {
         let events = NSArray::from_slice(&[event]);
         self.interpretKeyEvents(&events);
     }
+}
+
+/// Columnas y filas que caben en un panel.
+fn pane_dims(r: Rect, g: &Geometry) -> (usize, usize) {
+    let Some(m) = g.metrics else { return (80, 24) };
+    let cols = ((r.w - 2.0 * g.pad) / m.cell_w as f64).floor().max(1.0) as usize;
+    let rows = ((r.h - 2.0 * g.pad) / m.cell_h as f64).floor().max(1.0) as usize;
+    (cols, rows)
 }

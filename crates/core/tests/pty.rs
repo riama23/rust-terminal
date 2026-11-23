@@ -83,3 +83,41 @@ fn split_reader_and_writer_work_from_different_threads() {
     assert!(out.contains("got ping"), "salida: {out:?}");
     assert!(out.contains("33 90"), "salida: {out:?}");
 }
+
+#[test]
+fn spawn_in_directory_and_foreground_group() {
+    let dir = std::env::temp_dir();
+    let pty = Pty::spawn_in(
+        "/bin/sh",
+        &["-c", "pwd; sleep 1"],
+        no_env(),
+        Some(&dir),
+        80,
+        24,
+    )
+    .unwrap();
+    let (mut reader, writer, mut child) = pty.split().unwrap();
+    // Mientras corre `sleep`, el grupo en primer plano es el de la shell (sin
+    // control de trabajos, sh no crea grupos nuevos): existe y es un pid.
+    assert!(writer.foreground_pgrp().is_some());
+    let mut out = String::new();
+    let mut buf = [0u8; 1024];
+    while let Ok(n) = reader.read(&mut buf) {
+        if n == 0 {
+            break;
+        }
+        out.push_str(&String::from_utf8_lossy(&buf[..n]));
+    }
+    child.wait().unwrap();
+    let expected = dir.canonicalize().unwrap();
+    assert!(out.contains(expected.to_str().unwrap()), "salida: {out:?}");
+}
+
+#[test]
+fn hangup_terminates_the_shell() {
+    let pty = Pty::spawn("/bin/sh", &["-c", "sleep 30"], no_env(), 80, 24).unwrap();
+    let (_reader, _writer, mut child) = pty.split().unwrap();
+    rust_terminal_core::hangup(child.id());
+    let status = child.wait().unwrap();
+    assert!(!status.success());
+}

@@ -1,5 +1,5 @@
-//! Aplicación de macOS: ventana con AppKit, render con Metal y la shell del
-//! usuario en una PTY.
+//! Aplicación de macOS: una ventana con pestañas y paneles, render con Metal
+//! y la shell del usuario en una PTY por panel.
 
 mod font;
 mod input;
@@ -8,16 +8,18 @@ mod renderer;
 mod session;
 mod shell;
 mod view;
+mod window;
+mod workspace;
 
 use std::cell::OnceCell;
-use std::sync::Arc;
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSBackingStoreType,
-    NSMenu, NSMenuItem, NSScreen, NSWindow, NSWindowStyleMask,
+    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
+    NSApplicationTerminateReply, NSBackingStoreType, NSEventModifierFlags, NSMenu, NSMenuItem,
+    NSScreen, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{
     MainThreadMarker, NSLocale, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect,
@@ -25,12 +27,10 @@ use objc2_foundation::{
 };
 use objc2_metal::MTLPixelFormat;
 use objc2_quartz_core::{CAMetalLayer, kCAGravityTopLeft};
-use rust_terminal_core::{Pty, Term};
 
 use crate::font::Metrics;
-use crate::renderer::Layout;
-use crate::session::Shared;
 use crate::view::{PAD_PT, TerminalView};
+use crate::window::WindowShared;
 
 const INITIAL_COLS: usize = 100;
 const INITIAL_ROWS: usize = 30;
@@ -63,6 +63,23 @@ define_class!(
         fn should_terminate_after_last_window_closed(&self, _app: &NSApplication) -> bool {
             true
         }
+
+        /// Cmd+Q: confirma si hay programas en marcha.
+        #[unsafe(method(applicationShouldTerminate:))]
+        fn should_terminate(&self, _app: &NSApplication) -> NSApplicationTerminateReply {
+            let ok = self
+                .ivars()
+                .window
+                .get()
+                .and_then(|w| w.contentView())
+                .and_then(|v| v.downcast::<TerminalView>().ok())
+                .is_none_or(|v| v.confirm_quit());
+            if ok {
+                NSApplicationTerminateReply::TerminateNow
+            } else {
+                NSApplicationTerminateReply::TerminateCancel
+            }
+        }
     }
 );
 
@@ -91,6 +108,16 @@ fn menu_item(
     }
 }
 
+fn submenu(bar: &NSMenu, mtm: MainThreadMarker, title: &str, items: Vec<Retained<NSMenuItem>>) {
+    let item = NSMenuItem::new(mtm);
+    let menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str(title));
+    for i in items {
+        menu.addItem(&i);
+    }
+    item.setSubmenu(Some(&menu));
+    bar.addItem(&item);
+}
+
 fn build_menu(app: &NSApplication, mtm: MainThreadMarker) {
     let bar = NSMenu::new(mtm);
 
@@ -100,37 +127,74 @@ fn build_menu(app: &NSApplication, mtm: MainThreadMarker) {
     app_item.setSubmenu(Some(&app_menu));
     bar.addItem(&app_item);
 
-    let edit_item = NSMenuItem::new(mtm);
-    let edit_menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), ns_string!("Edición"));
-    edit_menu.addItem(&menu_item(mtm, "Copiar", sel!(copy:), "c"));
-    // "C" en mayúscula: Cmd+Shift+C.
-    edit_menu.addItem(&menu_item(
+    // Una mayúscula en el atajo implica Shift (p. ej. "D" = Cmd+Shift+D).
+    submenu(
+        &bar,
         mtm,
-        "Copiar salida del último comando",
-        sel!(copyLastOutput:),
-        "C",
-    ));
-    edit_menu.addItem(&menu_item(mtm, "Pegar", sel!(paste:), "v"));
-    edit_item.setSubmenu(Some(&edit_menu));
-    bar.addItem(&edit_item);
+        "Shell",
+        vec![
+            menu_item(mtm, "Nueva pestaña", sel!(newTab:), "t"),
+            menu_item(mtm, "Dividir en vertical", sel!(splitVertical:), "d"),
+            menu_item(mtm, "Dividir en horizontal", sel!(splitHorizontal:), "D"),
+            menu_item(mtm, "Cerrar", sel!(closePane:), "w"),
+            menu_item(mtm, "Cerrar pestaña", sel!(closeTab:), "W"),
+        ],
+    );
 
-    let view_item = NSMenuItem::new(mtm);
-    let view_menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), ns_string!("Ver"));
-    // U+F700 y U+F701: flechas arriba y abajo (NSUpArrowFunctionKey…).
-    view_menu.addItem(&menu_item(
+    submenu(
+        &bar,
         mtm,
-        "Bloque anterior",
-        sel!(previousBlock:),
-        "\u{F700}",
-    ));
-    view_menu.addItem(&menu_item(
+        "Edición",
+        vec![
+            menu_item(mtm, "Copiar", sel!(copy:), "c"),
+            menu_item(
+                mtm,
+                "Copiar salida del último comando",
+                sel!(copyLastOutput:),
+                "C",
+            ),
+            menu_item(mtm, "Pegar", sel!(paste:), "v"),
+        ],
+    );
+
+    // U+F700…U+F703: flechas (NSUpArrowFunctionKey…).
+    submenu(
+        &bar,
         mtm,
-        "Bloque siguiente",
-        sel!(nextBlock:),
-        "\u{F701}",
-    ));
-    view_item.setSubmenu(Some(&view_menu));
-    bar.addItem(&view_item);
+        "Ver",
+        vec![
+            menu_item(mtm, "Bloque anterior", sel!(previousBlock:), "\u{F700}"),
+            menu_item(mtm, "Bloque siguiente", sel!(nextBlock:), "\u{F701}"),
+        ],
+    );
+
+    let mut window_items = vec![
+        menu_item(mtm, "Pestaña anterior", sel!(previousTab:), "{"),
+        menu_item(mtm, "Pestaña siguiente", sel!(nextTab:), "}"),
+    ];
+    for (title, action, key) in [
+        ("Panel de la izquierda", sel!(focusLeft:), "\u{F702}"),
+        ("Panel de la derecha", sel!(focusRight:), "\u{F703}"),
+        ("Panel de arriba", sel!(focusUp:), "\u{F700}"),
+        ("Panel de abajo", sel!(focusDown:), "\u{F701}"),
+    ] {
+        let item = menu_item(mtm, title, action, key);
+        item.setKeyEquivalentModifierMask(
+            NSEventModifierFlags::Command | NSEventModifierFlags::Option,
+        );
+        window_items.push(item);
+    }
+    for n in 1..=9 {
+        let item = menu_item(
+            mtm,
+            &format!("Pestaña {n}"),
+            sel!(selectTab:),
+            &n.to_string(),
+        );
+        item.setTag(n);
+        window_items.push(item);
+    }
+    submenu(&bar, mtm, "Ventana", window_items);
 
     app.setMainMenu(Some(&bar));
 }
@@ -169,7 +233,7 @@ fn main() {
 /// Si no hay `LANG` (lo normal al abrir la app desde el Finder o el Dock),
 /// se le da a la shell un locale UTF-8 derivado del idioma del sistema. Sin
 /// él, zsh, vim o tmux trabajan en locale C y no muestran bien `ñ` ni `é`.
-fn utf8_locale_env() -> Vec<(&'static str, String)> {
+fn utf8_locale_env() -> Vec<(String, String)> {
     if std::env::var_os("LANG").is_some() {
         return Vec::new();
     }
@@ -185,34 +249,24 @@ fn utf8_locale_env() -> Vec<(&'static str, String)> {
     } else {
         "en_US.UTF-8".to_owned()
     };
-    vec![("LANG", lang)]
+    vec![("LANG".to_owned(), lang)]
 }
 
-/// Crea la ventana con su vista y arranca la sesión (shell, lector y render).
+/// Crea la ventana con su vista, arranca el render y la primera sesión.
 fn open_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
-    // Tamaño inicial de la ventana a partir de las métricas de la pantalla principal.
+    // Tamaño inicial a partir de las métricas de la pantalla principal
+    // (contando la barra de pestañas).
     let scale = NSScreen::mainScreen(mtm).map_or(2.0, |s| s.backingScaleFactor());
     let metrics = Metrics::of(&font::system_monospace(font::FONT_SIZE_PT * scale));
+    let bar_pt = (metrics.cell_h as f64 * 1.8).round() / scale;
     let content = NSSize::new(
         INITIAL_COLS as f64 * metrics.cell_w as f64 / scale + 2.0 * PAD_PT,
-        INITIAL_ROWS as f64 * metrics.cell_h as f64 / scale + 2.0 * PAD_PT,
+        INITIAL_ROWS as f64 * metrics.cell_h as f64 / scale + 2.0 * PAD_PT + bar_pt,
     );
 
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_owned());
-    let mut env: Vec<(String, String)> = utf8_locale_env()
-        .into_iter()
-        .map(|(k, v)| (k.to_owned(), v))
-        .collect();
+    let mut env = utf8_locale_env();
     env.extend(shell::integration_env(&shell));
-    let pty = Pty::spawn(
-        &shell,
-        &["-l"],
-        env,
-        INITIAL_COLS as u16,
-        INITIAL_ROWS as u16,
-    )
-    .expect("no se pudo lanzar la shell");
-    let (reader, writer, _child) = pty.split().expect("no se pudo separar la PTY");
 
     let device = renderer::create_device();
     let layer = CAMetalLayer::new();
@@ -224,18 +278,7 @@ fn open_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
     // a la izquierda en lugar de estirarse.
     // SAFETY: constante de Core Animation.
     layer.setContentsGravity(unsafe { kCAGravityTopLeft });
-
-    let shared = Arc::new(Shared::new(
-        Term::new(INITIAL_COLS, INITIAL_ROWS),
-        writer,
-        Layout {
-            scale,
-            width_px: 1,
-            height_px: 1,
-            pad_px: 0,
-        },
-        layer.clone(),
-    ));
+    let shared = WindowShared::new(layer.clone());
 
     // SAFETY: la ventana no se libera al cerrarse (`setReleasedWhenClosed(false)`).
     let window = unsafe {
@@ -252,13 +295,14 @@ fn open_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
     };
     // SAFETY: ventana creada fuera de un window controller.
     unsafe { window.setReleasedWhenClosed(false) };
-    let shell_name = shell.rsplit('/').next().unwrap_or(&shell).to_owned();
-    window.setTitle(&NSString::from_str(&shell_name));
+    window.setTitle(ns_string!("rust-terminal"));
 
     let view = TerminalView::new(
         mtm,
         NSRect::new(NSPoint::new(0.0, 0.0), content),
         shared.clone(),
+        shell,
+        env,
     );
     view.setLayer(Some(&layer));
     view.setWantsLayer(true);
@@ -267,13 +311,10 @@ fn open_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
     window.makeKeyAndOrderFront(None);
     window.makeFirstResponder(Some(&view));
 
-    let waker = session::start_render(shared, |target| {
+    let waker = window::start_render(shared, |target| {
         // SAFETY: `tick:` existe en RenderTarget y recibe el display link.
         unsafe { view.displayLinkWithTarget_selector(target, sel!(tick:)) }
     });
-    view.set_waker(waker.clone());
-    view.update_layout();
-    session::start_reader(reader, waker);
-
+    view.start(waker);
     window
 }

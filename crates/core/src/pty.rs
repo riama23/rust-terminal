@@ -45,6 +45,23 @@ impl Pty {
         K: AsRef<OsStr>,
         V: AsRef<OsStr>,
     {
+        Pty::spawn_in(program, args, env, None, cols, rows)
+    }
+
+    /// Como [`Pty::spawn`], pero arrancando en el directorio `cwd` si se da.
+    pub fn spawn_in<I, K, V>(
+        program: impl AsRef<OsStr>,
+        args: &[&str],
+        env: I,
+        cwd: Option<&std::path::Path>,
+        cols: u16,
+        rows: u16,
+    ) -> io::Result<Pty>
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: AsRef<OsStr>,
+        V: AsRef<OsStr>,
+    {
         // macOS no acepta `O_CLOEXEC` en `posix_openpt`: se pone después, para
         // que el hijo no herede el maestro.
         let master = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY)?;
@@ -70,6 +87,9 @@ impl Pty {
             .stdin(Stdio::from(slave.try_clone()?))
             .stdout(Stdio::from(slave.try_clone()?))
             .stderr(Stdio::from(slave));
+        if let Some(dir) = cwd.filter(|d| d.is_dir()) {
+            cmd.current_dir(dir);
+        }
 
         // SAFETY: entre `fork` y `exec` solo se hacen llamadas al sistema
         // seguras para señales asíncronas (`setsid` e `ioctl`), sin reservar memoria.
@@ -163,6 +183,24 @@ impl PtyWriter {
     pub fn resize(&self, cols: u16, rows: u16) -> io::Result<()> {
         tcsetwinsize(&self.master, winsize(cols, rows))?;
         Ok(())
+    }
+}
+
+impl PtyWriter {
+    /// Grupo de procesos en primer plano de la terminal. Si no es el de la
+    /// shell, hay un programa en marcha (vim, Claude Code, un `sleep`…).
+    pub fn foreground_pgrp(&self) -> Option<u32> {
+        rustix::termios::tcgetpgrp(&self.master)
+            .ok()
+            .map(|p| p.as_raw_nonzero().get() as u32)
+    }
+}
+
+/// Envía SIGHUP a un proceso (la shell de una sesión que se cierra), como
+/// hace una terminal al cerrar una ventana.
+pub fn hangup(pid: u32) {
+    if let Some(pid) = rustix::process::Pid::from_raw(pid as i32) {
+        let _ = rustix::process::kill_process(pid, rustix::process::Signal::HUP);
     }
 }
 

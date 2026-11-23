@@ -13,6 +13,13 @@ pub const SELECTION: [u8; 3] = [0x26, 0x4f, 0x78];
 pub const MARK_OK: [u8; 3] = [0x5a, 0x5a, 0x60];
 /// Marca de bloque en el margen: comando con código de salida distinto de 0.
 pub const MARK_FAILED: [u8; 3] = [0xe0, 0x4f, 0x4f];
+/// Divisores entre paneles y separadores de pestañas.
+pub const DIVIDER: [u8; 3] = [0x3a, 0x3a, 0x40];
+/// Fondo de la barra de pestañas y de las pestañas inactivas.
+pub const TAB_BAR: [u8; 3] = [0x12, 0x12, 0x14];
+pub const TAB_INACTIVE_FG: [u8; 3] = [0x90, 0x90, 0x98];
+/// Línea de la pestaña activa.
+pub const ACCENT: [u8; 3] = [0x3b, 0x8e, 0xea];
 
 /// Los 16 colores ANSI (esquema de xterm, algo suavizado).
 const ANSI: [[u8; 3]; 16] = [

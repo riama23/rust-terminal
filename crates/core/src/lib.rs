@@ -11,6 +11,6 @@ pub mod term;
 
 pub use block::Block;
 pub use grid::{Cell, Color, Flags, Grid, Line, Point, Row};
-pub use pty::{Pty, PtyReader, PtyWriter};
+pub use pty::{Pty, PtyReader, PtyWriter, hangup};
 pub use selection::{Selection, SelectionKind, SelectionRange};
 pub use term::{Cursor, Modes, Term};

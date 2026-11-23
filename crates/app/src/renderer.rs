@@ -197,13 +197,52 @@ pub struct Overlay {
     pub marks: Vec<(usize, bool)>,
 }
 
-/// Lo que el renderizador necesita saber del layout de la vista.
+/// Tamaño del drawable y escala.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Layout {
     pub scale: f64,
     pub width_px: u32,
     pub height_px: u32,
-    pub pad_px: u32,
+}
+
+/// Un panel a pintar: su rectángulo en píxeles (x, y, ancho, alto; incluye
+/// el margen interior `pad`) y su estado copiado con el bloqueo tomado.
+#[derive(Debug, Clone)]
+pub struct PaneFrame {
+    pub id: u64,
+    pub rect: [f32; 4],
+    pub pad: f32,
+    pub cursor: Cursor,
+    pub modes: Modes,
+    pub overlay: Overlay,
+    /// Panel con el foco del teclado (cursor macizo; los demás, hueco).
+    pub focused: bool,
+}
+
+/// Una pestaña de la barra.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TabItem {
+    pub title: String,
+    pub rect: [f32; 4],
+    pub close: [f32; 4],
+    pub active: bool,
+}
+
+/// La barra de pestañas, ya maquetada en píxeles.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TabBar {
+    pub rect: [f32; 4],
+    pub tabs: Vec<TabItem>,
+    pub plus: [f32; 4],
+}
+
+/// Todo lo que hay que pintar en un frame.
+#[derive(Debug, Clone)]
+pub struct Frame {
+    pub layout: Layout,
+    pub panes: Vec<PaneFrame>,
+    pub dividers: Vec<[f32; 4]>,
+    pub tab_bar: Option<TabBar>,
 }
 
 pub struct Renderer {
@@ -213,8 +252,8 @@ pub struct Renderer {
     atlas: Atlas,
     fonts: Fonts,
     scale: f64,
-    /// Copia local de la pantalla.
-    rows: Vec<Vec<Cell>>,
+    /// Copia local de la pantalla de cada panel.
+    panes: HashMap<u64, Vec<Vec<Cell>>>,
     quads: Vec<Quad>,
 }
 
@@ -265,7 +304,7 @@ impl Renderer {
             device,
             queue,
             pipeline,
-            rows: Vec::new(),
+            panes: HashMap::new(),
             quads: Vec::new(),
         }
     }
@@ -279,36 +318,39 @@ impl Renderer {
         }
     }
 
-    /// Ajusta la copia local al tamaño de la cuadrícula del núcleo. Devuelve
-    /// `true` si cambió, y entonces hay que copiar todas las filas.
-    pub fn ensure_size(&mut self, cols: usize, rows: usize) -> bool {
-        if self.rows.len() != rows || self.rows.first().is_some_and(|r| r.len() != cols) {
-            self.rows = vec![vec![Cell::default(); cols]; rows];
+    /// Ajusta la copia local de un panel al tamaño de su cuadrícula. Devuelve
+    /// `true` si es nueva o cambió, y entonces hay que copiar todas las filas.
+    pub fn ensure_pane(&mut self, id: u64, cols: usize, rows: usize) -> bool {
+        let copy = self.panes.entry(id).or_default();
+        if copy.len() != rows || copy.first().is_some_and(|r| r.len() != cols) || copy.is_empty() {
+            *copy = vec![vec![Cell::default(); cols]; rows];
             true
         } else {
             false
         }
     }
 
-    /// Actualiza una fila de la copia local (se llama con el bloqueo tomado).
-    /// Las filas del historial pueden ser más cortas: el resto queda en blanco.
-    pub fn update_row(&mut self, i: usize, row: &[Cell]) {
-        let dst = &mut self.rows[i];
+    /// Actualiza una fila de la copia local de un panel (con el bloqueo
+    /// tomado). Las filas del historial pueden ser más cortas: el resto queda
+    /// en blanco.
+    pub fn update_row(&mut self, id: u64, i: usize, row: &[Cell]) {
+        let Some(dst) = self.panes.get_mut(&id).and_then(|p| p.get_mut(i)) else {
+            return;
+        };
         let n = row.len().min(dst.len());
         dst[..n].copy_from_slice(&row[..n]);
         dst[n..].fill(Cell::default());
     }
 
+    /// Olvida las copias de los paneles que ya no se pintan.
+    pub fn retain_panes(&mut self, keep: impl Fn(u64) -> bool) {
+        self.panes.retain(|id, _| keep(*id));
+    }
+
     /// Construye un frame y lo presenta en el siguiente drawable del layer.
-    pub fn draw(
-        &mut self,
-        layer: &CAMetalLayer,
-        layout: Layout,
-        cursor: Cursor,
-        modes: Modes,
-        overlay: &Overlay,
-    ) {
-        self.build_quads(layout, cursor, modes, overlay);
+    pub fn draw(&mut self, layer: &CAMetalLayer, frame: &Frame) {
+        let layout = frame.layout;
+        self.build_quads(frame);
         let Some(drawable) = layer.nextDrawable() else {
             return;
         };
@@ -377,12 +419,128 @@ impl Renderer {
         Some(command_buffer)
     }
 
-    fn build_quads(&mut self, layout: Layout, cursor: Cursor, modes: Modes, overlay: &Overlay) {
+    fn build_quads(&mut self, frame: &Frame) {
         self.quads.clear();
+        let mut glyphs: Vec<Quad> = Vec::new();
+        for pane in &frame.panes {
+            self.build_pane(pane, &mut glyphs);
+        }
+        for d in &frame.dividers {
+            self.quads
+                .push(fill(*d, palette::to_rgba(palette::DIVIDER, 1.0)));
+        }
+        if let Some(bar) = &frame.tab_bar {
+            self.build_tab_bar(bar, &mut glyphs);
+        }
+        self.quads.extend(glyphs);
+    }
+
+    /// Texto de una sola línea a partir de `(x, y)` (arriba a la izquierda),
+    /// recortado con "…" si no cabe en `max_w`.
+    fn push_text(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        max_w: f32,
+        color: Rgba,
+        out: &mut Vec<Quad>,
+    ) {
+        let m = self.fonts.metrics;
+        let cw = m.cell_w as f32;
+        let fit = (max_w / cw).floor().max(0.0) as usize;
+        let chars: Vec<char> = text.chars().collect();
+        let shown: Vec<char> = if chars.len() > fit && fit > 0 {
+            chars[..fit - 1]
+                .iter()
+                .copied()
+                .chain(std::iter::once('…'))
+                .collect()
+        } else {
+            chars.into_iter().take(fit).collect()
+        };
+        let style = Style {
+            bold: false,
+            italic: false,
+        };
+        for (i, ch) in shown.into_iter().enumerate() {
+            if ch == ' ' {
+                continue;
+            }
+            if let Some(slot) = self.atlas.get(&self.fonts, ch, style, 1) {
+                out.push(glyph_quad(x + i as f32 * cw, y, slot, color));
+            }
+        }
+    }
+
+    fn build_tab_bar(&mut self, bar: &TabBar, glyphs: &mut Vec<Quad>) {
+        let m = self.fonts.metrics;
+        let ch = m.cell_h as f32;
+        let cw = m.cell_w as f32;
+        self.quads
+            .push(fill(bar.rect, palette::to_rgba(palette::TAB_BAR, 1.0)));
+        for tab in &bar.tabs {
+            let [x, y, w, h] = tab.rect;
+            let (bg, fg) = if tab.active {
+                (palette::DEFAULT_BG, palette::DEFAULT_FG)
+            } else {
+                (palette::TAB_BAR, palette::TAB_INACTIVE_FG)
+            };
+            self.quads.push(fill(tab.rect, palette::to_rgba(bg, 1.0)));
+            if tab.active {
+                let accent_h = (ch / 12.0).round().max(2.0);
+                self.quads.push(fill(
+                    [x, y, w, accent_h],
+                    palette::to_rgba(palette::ACCENT, 1.0),
+                ));
+            }
+            // Separador a la derecha de cada pestaña.
+            self.quads.push(fill(
+                [x + w - 1.0, y + h * 0.2, 1.0, h * 0.6],
+                palette::to_rgba(palette::DIVIDER, 1.0),
+            ));
+            let text_y = y + ((h - ch) / 2.0).round();
+            let text_x = x + cw;
+            let max_w = tab.close[0] - text_x - cw * 0.5;
+            self.push_text(
+                &tab.title,
+                text_x,
+                text_y,
+                max_w,
+                palette::to_rgba(fg, 1.0),
+                glyphs,
+            );
+            let [cx, cy, cwid, chei] = tab.close;
+            self.push_text(
+                "×",
+                cx + ((cwid - cw) / 2.0).round(),
+                cy + ((chei - ch) / 2.0).round(),
+                cw,
+                palette::to_rgba(palette::TAB_INACTIVE_FG, 1.0),
+                glyphs,
+            );
+        }
+        let [px, py, pw, ph] = bar.plus;
+        self.push_text(
+            "+",
+            px + ((pw - cw) / 2.0).round(),
+            py + ((ph - ch) / 2.0).round(),
+            cw,
+            palette::to_rgba(palette::TAB_INACTIVE_FG, 1.0),
+            glyphs,
+        );
+    }
+
+    fn build_pane(&mut self, pane: &PaneFrame, glyphs: &mut Vec<Quad>) {
+        let Some(rows) = self.panes.get(&pane.id) else {
+            return;
+        };
+        let rows = rows.clone();
         let m = self.fonts.metrics;
         let (cw, ch) = (m.cell_w as f32, m.cell_h as f32);
-        let pad = layout.pad_px as f32;
-        let mut glyphs: Vec<Quad> = Vec::new();
+        let pad = pane.pad;
+        let (ox, oy) = (pane.rect[0] + pad, pane.rect[1] + pad);
+        let (cursor, modes, overlay) = (pane.cursor, pane.modes, &pane.overlay);
 
         // Marcas de bloque en el margen izquierdo.
         let mark_w = (pad * 0.3).round().max(2.0);
@@ -392,15 +550,15 @@ impl Renderer {
             } else {
                 palette::MARK_OK
             };
-            let y = pad + r as f32 * ch;
+            let y = oy + r as f32 * ch;
             self.quads.push(fill(
-                [(pad - mark_w) / 3.0, y, mark_w, ch],
+                [pane.rect[0] + (pad - mark_w) / 3.0, y, mark_w, ch],
                 palette::to_rgba(color, 1.0),
             ));
         }
 
-        for (r, row) in self.rows.iter().enumerate() {
-            let y = pad + r as f32 * ch;
+        for (r, row) in rows.iter().enumerate() {
+            let y = oy + r as f32 * ch;
             let selected = overlay
                 .selection
                 .iter()
@@ -415,7 +573,7 @@ impl Renderer {
                 } else {
                     1
                 };
-                let x = pad + c as f32 * cw;
+                let x = ox + c as f32 * cw;
                 let w = cw * cells as f32;
 
                 let mut fg = palette::rgb(cell.fg, palette::DEFAULT_FG);
@@ -424,7 +582,7 @@ impl Renderer {
                     std::mem::swap(&mut fg, &mut bg);
                 }
                 let is_cursor = modes.cursor_visible && cursor.row == r && cursor.col == c;
-                if is_cursor {
+                if is_cursor && pane.focused {
                     fg = bg;
                     bg = palette::CURSOR;
                 } else if selected.is_some_and(|(a, b)| c >= a && c <= b) {
@@ -433,6 +591,19 @@ impl Renderer {
                 if bg != palette::DEFAULT_BG {
                     self.quads
                         .push(fill([x, y, w, ch], palette::to_rgba(bg, 1.0)));
+                }
+                if is_cursor && !pane.focused {
+                    // Cursor hueco en los paneles sin foco.
+                    let t = m.stroke.max(1) as f32;
+                    let c = palette::to_rgba(palette::CURSOR, 1.0);
+                    for rect in [
+                        [x, y, w, t],
+                        [x, y + ch - t, w, t],
+                        [x, y, t, ch],
+                        [x + w - t, y, t, ch],
+                    ] {
+                        glyphs.push(fill(rect, c));
+                    }
                 }
 
                 let alpha = if cell.flags.contains(Flags::DIM) {
@@ -447,17 +618,7 @@ impl Renderer {
                         italic: cell.flags.contains(Flags::ITALIC),
                     };
                     if let Some(slot) = self.atlas.get(&self.fonts, cell.ch, style, cells) {
-                        glyphs.push(Quad {
-                            rect: [x, y, slot.w as f32, slot.h as f32],
-                            uv: [slot.x as f32, slot.y as f32, slot.w as f32, slot.h as f32],
-                            color: fg_rgba,
-                            kind: if slot.color {
-                                KIND_COLOR_GLYPH
-                            } else {
-                                KIND_GLYPH
-                            },
-                            _pad: [0; 3],
-                        });
+                        glyphs.push(glyph_quad(x, y, slot, fg_rgba));
                     }
                 }
                 let stroke = m.stroke as f32;
@@ -471,7 +632,20 @@ impl Renderer {
                 }
             }
         }
-        self.quads.extend(glyphs);
+    }
+}
+
+fn glyph_quad(x: f32, y: f32, slot: Slot, color: Rgba) -> Quad {
+    Quad {
+        rect: [x, y, slot.w as f32, slot.h as f32],
+        uv: [slot.x as f32, slot.y as f32, slot.w as f32, slot.h as f32],
+        color,
+        kind: if slot.color {
+            KIND_COLOR_GLYPH
+        } else {
+            KIND_GLYPH
+        },
+        _pad: [0; 3],
     }
 }
 
@@ -492,8 +666,18 @@ mod tests {
 
     use super::*;
 
+    /// Layout de los tests: un solo panel que ocupa toda la textura.
+    #[derive(Clone, Copy)]
+    struct TestLayout {
+        #[allow(dead_code)]
+        scale: f64,
+        width_px: u32,
+        height_px: u32,
+        pad_px: u32,
+    }
+
     /// Pinta `term` en una textura fuera de pantalla y devuelve los píxeles BGRA.
-    fn render(term: &Term, scale: f64) -> (Layout, crate::font::Metrics, Vec<u8>) {
+    fn render(term: &Term, scale: f64) -> (TestLayout, crate::font::Metrics, Vec<u8>) {
         render_with(term, scale, &Overlay::default())
     }
 
@@ -501,17 +685,17 @@ mod tests {
         term: &Term,
         scale: f64,
         overlay: &Overlay,
-    ) -> (Layout, crate::font::Metrics, Vec<u8>) {
+    ) -> (TestLayout, crate::font::Metrics, Vec<u8>) {
         let device = create_device();
         let mut r = Renderer::new(device.clone(), MTLPixelFormat::BGRA8Unorm, scale);
         let m = r.fonts.metrics;
         let grid = term.grid();
-        r.ensure_size(grid.cols(), grid.rows());
+        r.ensure_pane(0, grid.cols(), grid.rows());
         for i in 0..grid.rows() {
-            r.update_row(i, grid.row(i));
+            r.update_row(0, i, grid.row(i));
         }
         let pad = 4;
-        let layout = Layout {
+        let layout = TestLayout {
             scale,
             width_px: 2 * pad + m.cell_w * grid.cols() as u32,
             height_px: 2 * pad + m.cell_h * grid.rows() as u32,
@@ -530,8 +714,26 @@ mod tests {
         desc.setStorageMode(MTLStorageMode::Shared);
         let texture = device.newTextureWithDescriptor(&desc).unwrap();
 
-        r.build_quads(layout, term.cursor(), term.modes(), overlay);
-        let cb = r.encode(&texture, layout).unwrap();
+        let frame = Frame {
+            layout: Layout {
+                scale,
+                width_px: layout.width_px,
+                height_px: layout.height_px,
+            },
+            panes: vec![PaneFrame {
+                id: 0,
+                rect: [0.0, 0.0, layout.width_px as f32, layout.height_px as f32],
+                pad: pad as f32,
+                cursor: term.cursor(),
+                modes: term.modes(),
+                overlay: overlay.clone(),
+                focused: true,
+            }],
+            dividers: Vec::new(),
+            tab_bar: None,
+        };
+        r.build_quads(&frame);
+        let cb = r.encode(&texture, frame.layout).unwrap();
         cb.commit();
         cb.waitUntilCompleted();
 
@@ -559,7 +761,7 @@ mod tests {
 
     /// Píxeles (BGRA) de la celda `(row, col)`.
     fn cell_pixels(
-        layout: Layout,
+        layout: TestLayout,
         m: crate::font::Metrics,
         pixels: &[u8],
         row: u32,
@@ -722,6 +924,130 @@ mod tests {
         bmp.extend_from_slice(&32u16.to_le_bytes());
         bmp.extend_from_slice(&[0; 24]);
         bmp.extend_from_slice(&pixels);
+        std::fs::write(path, bmp).unwrap();
+    }
+
+    /// Barra de pestañas y dos paneles, a un BMP para revisarlo a ojo:
+    /// `RT_RENDER_DUMP=/tmp/tabs.bmp cargo test -p rust-terminal dump_tabs -- --ignored`
+    #[test]
+    #[ignore]
+    fn dump_tabs_and_panes() {
+        let Some(path) = std::env::var_os("RT_RENDER_DUMP") else {
+            return;
+        };
+        let scale = 2.0;
+        let device = create_device();
+        let mut r = Renderer::new(device.clone(), MTLPixelFormat::BGRA8Unorm, scale);
+        let m = r.fonts.metrics;
+        let (cw, ch) = (m.cell_w as f32, m.cell_h as f32);
+        let pad = 12.0;
+        let bar_h = (ch * 1.8).round();
+        let pane_w = 2.0 * pad + 30.0 * cw;
+        let pane_h = 2.0 * pad + 6.0 * ch;
+        let (w, h) = (2.0 * pane_w + 2.0, bar_h + pane_h);
+
+        let mut left = Term::new(30, 6);
+        left.advance(
+            "\x1b[32m~/proyecto\x1b[0m $ cargo test\r\n   Compiling ok\r\ntest result: ok\r\n$ "
+                .as_bytes(),
+        );
+        let mut right = Term::new(30, 6);
+        right.advance("$ vim src/main.rs\r\n\x1b[1mfn\x1b[0m main() {}\r\n$ ".as_bytes());
+        let mut panes = Vec::new();
+        for (id, term, x, focused) in [(1u64, &left, 0.0, true), (2, &right, pane_w + 2.0, false)] {
+            r.ensure_pane(id, 30, 6);
+            for i in 0..6 {
+                r.update_row(id, i, term.grid().row(i));
+            }
+            panes.push(PaneFrame {
+                id,
+                rect: [x, bar_h, pane_w, pane_h],
+                pad,
+                cursor: term.cursor(),
+                modes: term.modes(),
+                overlay: Overlay::default(),
+                focused,
+            });
+        }
+        let tab_w = (cw * 28.0).floor();
+        let close_w = (cw * 2.5).round();
+        let tab = |i: usize, title: &str, active: bool| {
+            let x = i as f32 * tab_w;
+            TabItem {
+                title: title.to_owned(),
+                rect: [x, 0.0, tab_w, bar_h],
+                close: [x + tab_w - close_w, 0.0, close_w, bar_h],
+                active,
+            }
+        };
+        let frame = Frame {
+            layout: Layout {
+                scale,
+                width_px: w as u32,
+                height_px: h as u32,
+            },
+            panes,
+            dividers: vec![[pane_w, bar_h, 2.0, pane_h]],
+            tab_bar: Some(TabBar {
+                rect: [0.0, 0.0, w, bar_h],
+                tabs: vec![
+                    tab(0, "proyecto", true),
+                    tab(1, "un título muy largo que no cabe en la pestaña", false),
+                ],
+                plus: [2.0 * tab_w, 0.0, bar_h, bar_h],
+            }),
+        };
+        // SAFETY: descriptor 2D estándar.
+        let desc = unsafe {
+            MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+                MTLPixelFormat::BGRA8Unorm,
+                w as NSUInteger,
+                h as NSUInteger,
+                false,
+            )
+        };
+        desc.setUsage(MTLTextureUsage::RenderTarget | MTLTextureUsage::ShaderRead);
+        desc.setStorageMode(MTLStorageMode::Shared);
+        let texture = device.newTextureWithDescriptor(&desc).unwrap();
+        r.build_quads(&frame);
+        let cb = r.encode(&texture, frame.layout).unwrap();
+        cb.commit();
+        cb.waitUntilCompleted();
+        let (w, h) = (w as usize, h as usize);
+        let mut pixels = vec![0u8; w * h * 4];
+        let region = MTLRegion {
+            origin: MTLOrigin { x: 0, y: 0, z: 0 },
+            size: MTLSize {
+                width: w as NSUInteger,
+                height: h as NSUInteger,
+                depth: 1,
+            },
+        };
+        // SAFETY: el buffer tiene el tamaño de la región completa.
+        unsafe {
+            texture.getBytes_bytesPerRow_fromRegion_mipmapLevel(
+                NonNull::new_unchecked(pixels.as_mut_ptr().cast()),
+                (w * 4) as NSUInteger,
+                region,
+                0,
+            );
+        }
+        write_bmp(&path, w, h, &pixels);
+    }
+
+    fn write_bmp(path: &std::ffi::OsStr, w: usize, h: usize, pixels: &[u8]) {
+        let mut bmp = Vec::with_capacity(54 + w * h * 4);
+        bmp.extend_from_slice(b"BM");
+        bmp.extend_from_slice(&((54 + w * h * 4) as u32).to_le_bytes());
+        bmp.extend_from_slice(&[0; 4]);
+        bmp.extend_from_slice(&54u32.to_le_bytes());
+        bmp.extend_from_slice(&40u32.to_le_bytes());
+        bmp.extend_from_slice(&(w as i32).to_le_bytes());
+        bmp.extend_from_slice(&(-(h as i32)).to_le_bytes());
+        bmp.extend_from_slice(&1u16.to_le_bytes());
+        bmp.extend_from_slice(&32u16.to_le_bytes());
+        bmp.extend_from_slice(&[0; 24]);
+        bmp.extend_from_slice(pixels);
         std::fs::write(path, bmp).unwrap();
     }
 }
