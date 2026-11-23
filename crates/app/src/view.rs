@@ -35,6 +35,7 @@ use crate::input::{
 };
 use crate::notify;
 use crate::renderer::{Layout, TabBar, TabItem};
+use crate::report;
 use crate::session::{AppEvent, Session, SpawnOptions};
 use crate::window::{PaneSlot, Waker, WindowFrame, WindowShared};
 use crate::workspace::{Axis, Direction, Divider, PaneId, Rect, Workspace};
@@ -213,6 +214,13 @@ define_class!(
         }
 
         // --- Pestañas y paneles ---
+
+        /// Cmd+Shift+I: abre una issue nueva con el diagnóstico rellenado.
+        #[unsafe(method(reportIssue:))]
+        fn report_issue(&self, _sender: Option<&AnyObject>) {
+            let url = report::issue_url(&self.diagnostics());
+            open_url(&url);
+        }
 
         #[unsafe(method(newTab:))]
         fn new_tab_action(&self, _sender: Option<&AnyObject>) {
@@ -1246,6 +1254,75 @@ impl TerminalView {
             *self.ivars().hover_link.borrow_mut() = hover;
             self.update_layout();
         }
+    }
+
+    /// Diagnóstico para un informe de fallo (panel con el foco).
+    fn diagnostics(&self) -> report::Diagnostics {
+        let macos = objc2_foundation::NSProcessInfo::processInfo()
+            .operatingSystemVersionString()
+            .to_string();
+        let size = self.bounds().size;
+        let (tabs, panes) = self.with_workspace(|w| (w.tabs.len(), w.tab().panes().len()));
+        let scale = self.ivars().geometry.borrow().scale;
+        let spec = self.font_spec();
+        let mut d = report::Diagnostics {
+            macos,
+            window: format!(
+                "{:.0}×{:.0} pt, escala {scale}; {tabs} pestañas, {panes} paneles en la activa",
+                size.width, size.height
+            ),
+            font: format!(
+                "{} {} pt",
+                spec.family.as_deref().unwrap_or("SF Mono (sistema)"),
+                spec.size_pt
+            ),
+            unhandled: rust_terminal_core::recent_unhandled(),
+            ..Default::default()
+        };
+        if let Some(s) = self.focused_session() {
+            let term = s.term.lock().unwrap();
+            let m = term.modes();
+            d.pane = format!(
+                "{}×{}, pantalla alternativa: {}, ratón: {:?}, teclado kitty: {}, historial: {} líneas, título: {}",
+                term.grid().cols(),
+                term.grid().rows(),
+                if m.alt_screen { "sí" } else { "no" },
+                m.mouse,
+                m.kitty_flags,
+                term.grid().history_len(),
+                term.title().unwrap_or("-")
+            );
+            d.last_command = term
+                .blocks()
+                .iter()
+                .rev()
+                .find(|b| b.command.is_some())
+                .map(|b| {
+                    let cmd = b.command.as_deref().unwrap_or_default();
+                    match (b.exit_code, b.duration()) {
+                        (Some(code), Some(t)) => {
+                            format!("`{cmd}` → código {code} ({:.1} s)", t.as_secs_f64())
+                        }
+                        (Some(code), None) => format!("`{cmd}` → código {code}"),
+                        _ => format!("`{cmd}` (en marcha)"),
+                    }
+                });
+            d.screen = (0..term.grid().rows())
+                .map(|i| {
+                    let line: String = term
+                        .visible_row(i)
+                        .iter()
+                        .filter(|c| !c.flags.contains(rust_terminal_core::Flags::WIDE_SPACER))
+                        .map(|c| c.ch)
+                        .collect();
+                    line.trim_end().to_owned()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+                .trim_end()
+                .to_owned();
+        }
+        d
     }
 
     /// `clipboard.read = "ask"`: pregunta si se permite leer el portapapeles.

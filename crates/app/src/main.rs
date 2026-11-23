@@ -7,6 +7,7 @@ mod input;
 mod notify;
 mod palette;
 mod renderer;
+mod report;
 mod session;
 mod shell;
 mod view;
@@ -226,6 +227,18 @@ fn build_menu(app: &NSApplication, mtm: MainThreadMarker) {
         window_items.push(item);
     }
     submenu(&bar, mtm, "Ventana", window_items);
+
+    submenu(
+        &bar,
+        mtm,
+        "Ayuda",
+        vec![menu_item(
+            mtm,
+            "Informar de un fallo…",
+            sel!(reportIssue:),
+            "I",
+        )],
+    );
 
     app.setMainMenu(Some(&bar));
 }

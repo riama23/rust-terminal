@@ -598,9 +598,45 @@ fn byte(v: u16) -> u8 {
 /// variable de entorno `RT_LOG_UNHANDLED` está definida.
 fn log_unhandled(args: std::fmt::Arguments) {
     static ENABLED: OnceLock<bool> = OnceLock::new();
+    let text = args.to_string();
     if *ENABLED.get_or_init(|| std::env::var_os("RT_LOG_UNHANDLED").is_some()) {
-        eprintln!("[sin soporte] {args}");
+        eprintln!("[sin soporte] {text}");
     }
+    record_unhandled(text);
+}
+
+/// Cuántas secuencias no soportadas se recuerdan para los informes de fallos.
+const RECENT_UNHANDLED: usize = 30;
+
+fn recent() -> &'static std::sync::Mutex<std::collections::VecDeque<(String, u32)>> {
+    static RECENT: OnceLock<std::sync::Mutex<std::collections::VecDeque<(String, u32)>>> =
+        OnceLock::new();
+    RECENT.get_or_init(Default::default)
+}
+
+/// Guarda la secuencia (las repetidas seguidas solo suman a su contador).
+fn record_unhandled(text: String) {
+    let Ok(mut list) = recent().lock() else {
+        return;
+    };
+    match list.back_mut() {
+        Some((last, n)) if *last == text => *n += 1,
+        _ => {
+            if list.len() == RECENT_UNHANDLED {
+                list.pop_front();
+            }
+            list.push_back((text, 1));
+        }
+    }
+}
+
+/// Últimas secuencias que el núcleo no interpretó (de todas las sesiones),
+/// con cuántas veces seguidas llegaron. Para los informes de fallos.
+pub fn recent_unhandled() -> Vec<(String, u32)> {
+    recent()
+        .lock()
+        .map(|l| l.iter().cloned().collect())
+        .unwrap_or_default()
 }
 
 fn describe_params(params: &Params) -> String {
@@ -2389,5 +2425,15 @@ mod tests {
         let mut none = Term::with_history_limit(5, 1, 0);
         none.advance(b"1\r\n2");
         assert_eq!(none.grid().history_len(), 0);
+    }
+
+    #[test]
+    fn unhandled_sequences_are_recorded() {
+        let _t = term(5, 1, "\x1b[?31337h\x1b[?31337h");
+        let recent = recent_unhandled();
+        assert!(
+            recent.iter().any(|(s, n)| s.contains("31337") && *n >= 2),
+            "{recent:?}"
+        );
     }
 }

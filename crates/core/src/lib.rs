@@ -18,4 +18,4 @@ pub use block::Block;
 pub use grid::{Cell, Color, Flags, Grid, Line, Point, Row};
 pub use pty::{Pty, PtyReader, PtyWriter, hangup};
 pub use selection::{Selection, SelectionKind, SelectionRange};
-pub use term::{Cursor, Modes, MouseMode, Term, TermEvent};
+pub use term::{Cursor, Modes, MouseMode, Term, TermEvent, recent_unhandled};
