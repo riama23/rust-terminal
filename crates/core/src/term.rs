@@ -145,6 +145,8 @@ struct Screen {
     title_changed: bool,
     /// Bytes que hay que devolver a la aplicación por la PTY.
     responses: Vec<u8>,
+    /// Líneas de historial de la pantalla principal.
+    history_limit: usize,
     bell: bool,
     /// Al redimensionar con el cursor en el prompt, borrarlo para que la shell
     /// lo redibuje limpio (ver `Term::resize`).
@@ -177,9 +179,14 @@ pub struct Term {
 
 impl Term {
     pub fn new(cols: usize, rows: usize) -> Term {
+        Term::with_history_limit(cols, rows, HISTORY_LIMIT)
+    }
+
+    /// Como [`Term::new`], con un límite de historial propio.
+    pub fn with_history_limit(cols: usize, rows: usize, history_limit: usize) -> Term {
         Term {
             parser: Parser::new(),
-            screen: Screen::new(cols, rows),
+            screen: Screen::new(cols, rows, history_limit),
         }
     }
 
@@ -639,9 +646,10 @@ fn dec_line_drawing(c: char) -> char {
 }
 
 impl Screen {
-    fn new(cols: usize, rows: usize) -> Screen {
+    fn new(cols: usize, rows: usize, history_limit: usize) -> Screen {
         Screen {
-            grid: Grid::with_history(cols, rows, HISTORY_LIMIT),
+            history_limit,
+            grid: Grid::with_history(cols, rows, history_limit),
             inactive_grid: Grid::new(cols, rows),
             cursor: Cursor::default(),
             pen: Pen::default(),
@@ -1147,7 +1155,7 @@ impl Screen {
 
     fn reset(&mut self) {
         let title = self.title.take();
-        *self = Screen::new(self.cols(), self.rows());
+        *self = Screen::new(self.cols(), self.rows(), self.history_limit);
         self.title = title;
     }
 
@@ -2339,5 +2347,18 @@ mod tests {
         let input = format!("{A}$ {B}x\r\n{}{}{A}$ ", c("x"), d(0));
         let t = term(20, 5, &input);
         assert!(t.blocks()[0].duration().is_some());
+    }
+
+    #[test]
+    fn custom_history_limit() {
+        let mut t = Term::with_history_limit(5, 1, 3);
+        t.advance("1\r\n2\r\n3\r\n4\r\n5\r\n6".as_bytes());
+        assert_eq!(t.grid().history_len(), 3);
+        // Un reset conserva el límite.
+        t.advance(b"\x1bc1\r\n2\r\n3\r\n4\r\n5");
+        assert_eq!(t.grid().history_len(), 3);
+        let mut none = Term::with_history_limit(5, 1, 0);
+        none.advance(b"1\r\n2");
+        assert_eq!(none.grid().history_len(), 0);
     }
 }

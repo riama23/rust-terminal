@@ -21,6 +21,8 @@ use objc2_foundation::{
 use objc2_quartz_core::{CADisplayLink, CAMetalLayer};
 use rust_terminal_core::{Cursor, Modes, SelectionRange, Term};
 
+use crate::config::Theme;
+use crate::font::FontSpec;
 use crate::renderer::{Frame, Layout, Overlay, PaneFrame, Renderer, TabBar};
 use crate::session::Session;
 
@@ -42,6 +44,8 @@ pub struct WindowFrame {
     pub panes: Vec<PaneSlot>,
     pub dividers: Vec<[f32; 4]>,
     pub tab_bar: Option<TabBar>,
+    pub theme: Theme,
+    pub font: FontSpec,
 }
 
 /// `CAMetalLayer` compartido entre el hilo principal (tamaño y escala) y el
@@ -219,9 +223,15 @@ impl RenderTarget {
         let renderer = guard.get_or_insert_with(|| {
             let layer = window.layer.lock();
             let device = layer.device().expect("el layer no tiene device");
-            Renderer::new(device, layer.pixelFormat(), wf.layout.scale)
+            Renderer::new(
+                device,
+                layer.pixelFormat(),
+                &wf.font,
+                wf.theme,
+                wf.layout.scale,
+            )
         });
-        renderer.set_scale(wf.layout.scale);
+        renderer.set_appearance(&wf.font, wf.layout.scale, wf.theme);
 
         let mut panes = Vec::with_capacity(wf.panes.len());
         let mut held = self.ivars().held.lock().unwrap();

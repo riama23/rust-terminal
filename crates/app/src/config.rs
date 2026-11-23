@@ -35,7 +35,10 @@ pub struct OptionSpec {
     pub kind: Kind,
     /// Valor por defecto, como literal TOML.
     pub default: &'static str,
+    /// Solo se leen al generar la documentación (en el test que la mantiene).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub apply: Apply,
+    #[cfg_attr(not(test), allow(dead_code))]
     pub description: &'static str,
 }
 
@@ -466,7 +469,9 @@ impl Default for Config {
     }
 }
 
-/// Documentación de todas las opciones, en Markdown.
+/// Documentación de todas las opciones, en Markdown (la genera y comprueba
+/// el test `docs_are_up_to_date`).
+#[cfg(test)]
 pub fn docs_markdown() -> String {
     let mut out = String::new();
     out.push_str("# Configuración\n\n");

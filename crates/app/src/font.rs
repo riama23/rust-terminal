@@ -11,8 +11,35 @@ use objc2_core_graphics::{
 };
 use objc2_core_text::{CTFont, CTFontOrientation, CTFontSymbolicTraits};
 
-/// Tamaño de la fuente en puntos (fijo hasta M7).
-pub const FONT_SIZE_PT: CGFloat = 13.0;
+/// Fuente elegida en la configuración (`[font]`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FontSpec {
+    /// `None`: la monoespaciada del sistema (SF Mono).
+    pub family: Option<String>,
+    pub size_pt: CGFloat,
+}
+
+impl FontSpec {
+    /// Fuente principal a `scale` (píxeles físicos por punto).
+    pub fn font(&self, scale: CGFloat) -> CFRetained<CTFont> {
+        primary_font(self.family.as_deref(), self.size_pt * scale)
+    }
+}
+
+/// La familia pedida si existe; si no, la monoespaciada del sistema.
+pub fn primary_font(family: Option<&str>, size_px: CGFloat) -> CFRetained<CTFont> {
+    if let Some(name) = family {
+        // SAFETY: nombre y tamaño válidos; Core Text devuelve una sustituta
+        // si no existe, y por eso se compara la familia.
+        let font =
+            unsafe { CTFont::with_name(&CFString::from_str(name), size_px, std::ptr::null()) };
+        let got = unsafe { font.family_name() }.to_string();
+        if got.eq_ignore_ascii_case(name) {
+            return font;
+        }
+    }
+    system_monospace(size_px)
+}
 
 /// Estilo tipográfico de una celda.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -107,8 +134,8 @@ fn with_traits(base: &CFRetained<CTFont>, traits: CTFontSymbolicTraits) -> CFRet
 }
 
 impl Fonts {
-    pub fn new(size_px: CGFloat) -> Fonts {
-        let regular = system_monospace(size_px);
+    pub fn new(spec: &FontSpec, scale: CGFloat) -> Fonts {
+        let regular = spec.font(scale);
         let bold = with_traits(&regular, CTFontSymbolicTraits::TraitBold);
         let italic = with_traits(&regular, CTFontSymbolicTraits::TraitItalic);
         let bold_italic = with_traits(
@@ -236,4 +263,20 @@ fn glyph_in(font: &CTFont, utf16: &mut [u16; 2], units: usize) -> Option<u16> {
         )
     };
     (found && glyphs[0] != 0).then_some(glyphs[0])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_family_falls_back_to_system_monospace() {
+        let system = unsafe { system_monospace(26.0).family_name() }.to_string();
+        let missing =
+            unsafe { primary_font(Some("Fuente Que No Existe"), 26.0).family_name() }.to_string();
+        assert_eq!(missing, system);
+        // Una familia que sí existe en macOS.
+        let menlo = unsafe { primary_font(Some("Menlo"), 26.0).family_name() }.to_string();
+        assert_eq!(menlo, "Menlo");
+    }
 }

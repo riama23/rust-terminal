@@ -17,9 +17,6 @@ use rust_terminal_core::{Pty, PtyReader, PtyWriter, Term, TermEvent};
 use crate::window::Waker;
 use crate::workspace::PaneId;
 
-/// Duración a partir de la cual se avisa de que un comando terminó.
-const LONG_COMMAND: Duration = Duration::from_secs(10);
-
 /// Algo que la sesión le pide a la app (en el hilo principal).
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppEvent {
@@ -47,26 +44,42 @@ pub struct Session {
     pending: Mutex<Vec<AppEvent>>,
     /// Último bloque terminado que ya se revisó (para avisar una sola vez).
     last_finished: AtomicU64,
+    /// Segundos a partir de los que se avisa de un comando largo (0 = nunca).
+    pub long_command_secs: AtomicU64,
+}
+
+/// Qué lanzar en una sesión nueva (de la configuración).
+pub struct SpawnOptions<'a> {
+    pub shell: &'a str,
+    pub args: &'a [String],
+    pub env: &'a [(String, String)],
+    pub cwd: Option<&'a Path>,
+    pub history_limit: usize,
+    pub long_command_secs: u64,
 }
 
 impl Session {
     /// Lanza `shell` como shell de login en una PTY nueva y arranca su lector.
     pub fn spawn(
         id: PaneId,
-        shell: &str,
-        env: &[(String, String)],
-        cwd: Option<&Path>,
+        opts: SpawnOptions,
         cols: u16,
         rows: u16,
         waker: Arc<Waker>,
     ) -> std::io::Result<Arc<Session>> {
         // Todos los `spawn` ocurren en el hilo principal: así ningún otro
         // `fork` puede heredar un maestro antes de que tenga `CLOEXEC`.
-        let pty = Pty::spawn_in(shell, &["-l"], env.iter().cloned(), cwd, cols, rows)?;
+        let shell = opts.shell;
+        let args: Vec<&str> = opts.args.iter().map(String::as_str).collect();
+        let pty = Pty::spawn_in(shell, &args, opts.env.iter().cloned(), opts.cwd, cols, rows)?;
         let (reader, writer, child) = pty.split()?;
         let session = Arc::new(Session {
             id,
-            term: Mutex::new(Term::new(cols.into(), rows.into())),
+            term: Mutex::new(Term::with_history_limit(
+                cols.into(),
+                rows.into(),
+                opts.history_limit,
+            )),
             writer: Mutex::new(writer),
             pid: child.id(),
             shell_name: shell.rsplit('/').next().unwrap_or(shell).to_owned(),
@@ -74,6 +87,7 @@ impl Session {
             exited: AtomicBool::new(false),
             pending: Mutex::new(Vec::new()),
             last_finished: AtomicU64::new(0),
+            long_command_secs: AtomicU64::new(opts.long_command_secs),
         });
         start_reader(session.clone(), reader, child, waker);
         Ok(session)
@@ -149,7 +163,11 @@ impl Session {
         }
         if let Some(b) = term.last_finished_block()
             && b.id > self.last_finished.swap(b.id, SeqCst)
-            && let Some(d) = b.duration().filter(|d| *d >= LONG_COMMAND)
+            && let threshold = self.long_command_secs.load(SeqCst)
+            && threshold > 0
+            && let Some(d) = b
+                .duration()
+                .filter(|d| *d >= Duration::from_secs(threshold))
         {
             events.push(AppEvent::CommandFinished {
                 command: b.command.clone().unwrap_or_default(),

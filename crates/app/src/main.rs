@@ -1,8 +1,6 @@
 //! Aplicación de macOS: una ventana con pestañas y paneles, render con Metal
 //! y la shell del usuario en una PTY por panel.
 
-// Se conecta al resto de la app en el siguiente paso de M7.
-#[allow(dead_code)]
 mod config;
 mod font;
 mod input;
@@ -32,8 +30,9 @@ use objc2_foundation::{
 use objc2_metal::MTLPixelFormat;
 use objc2_quartz_core::{CAMetalLayer, kCAGravityTopLeft};
 
+use crate::config::Config;
 use crate::font::Metrics;
-use crate::view::{PAD_PT, TerminalView};
+use crate::view::TerminalView;
 use crate::window::WindowShared;
 
 const INITIAL_COLS: usize = 100;
@@ -288,16 +287,20 @@ fn open_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
     // Tamaño inicial a partir de las métricas de la pantalla principal
     // (contando la barra de pestañas).
     let scale = NSScreen::mainScreen(mtm).map_or(2.0, |s| s.backingScaleFactor());
-    let metrics = Metrics::of(&font::system_monospace(font::FONT_SIZE_PT * scale));
+    let (config, errors) = Config::load();
+    for e in &errors {
+        eprintln!("configuración: {e}");
+    }
+    let spec = font::FontSpec {
+        family: config.font_family.clone(),
+        size_pt: config.font_size,
+    };
+    let metrics = Metrics::of(&spec.font(scale));
     let bar_pt = (metrics.cell_h as f64 * 1.8).round() / scale;
     let content = NSSize::new(
-        INITIAL_COLS as f64 * metrics.cell_w as f64 / scale + 2.0 * PAD_PT,
-        INITIAL_ROWS as f64 * metrics.cell_h as f64 / scale + 2.0 * PAD_PT + bar_pt,
+        INITIAL_COLS as f64 * metrics.cell_w as f64 / scale + 2.0 * config.padding,
+        INITIAL_ROWS as f64 * metrics.cell_h as f64 / scale + 2.0 * config.padding + bar_pt,
     );
-
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_owned());
-    let mut env = utf8_locale_env();
-    env.extend(shell::integration_env(&shell));
 
     let device = renderer::create_device();
     let layer = CAMetalLayer::new();
@@ -332,8 +335,8 @@ fn open_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
         mtm,
         NSRect::new(NSPoint::new(0.0, 0.0), content),
         shared.clone(),
-        shell,
-        env,
+        config,
+        utf8_locale_env(),
     );
     view.setLayer(Some(&layer));
     view.setWantsLayer(true);

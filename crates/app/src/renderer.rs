@@ -19,7 +19,8 @@ use objc2_metal::{
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 use rust_terminal_core::{Cell, Cursor, Flags, Modes};
 
-use crate::font::{Fonts, Style};
+use crate::config::Theme;
+use crate::font::{FontSpec, Fonts, Style};
 use crate::palette::{self, Rgba};
 
 const SHADER: &str = r#"
@@ -253,7 +254,9 @@ pub struct Renderer {
     pipeline: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     atlas: Atlas,
     fonts: Fonts,
+    font: FontSpec,
     scale: f64,
+    theme: Theme,
     /// Copia local de la pantalla de cada panel.
     panes: HashMap<u64, Vec<Vec<Cell>>>,
     quads: Vec<Quad>,
@@ -271,6 +274,8 @@ impl Renderer {
     pub fn new(
         device: Retained<ProtocolObject<dyn MTLDevice>>,
         pixel_format: MTLPixelFormat,
+        font: &FontSpec,
+        theme: Theme,
         scale: f64,
     ) -> Renderer {
         let queue = device.newCommandQueue().expect("cola de comandos");
@@ -301,8 +306,10 @@ impl Renderer {
 
         Renderer {
             atlas: Atlas::new(&device),
-            fonts: Fonts::new(crate::font::FONT_SIZE_PT * scale),
+            fonts: Fonts::new(font, scale),
+            font: font.clone(),
             scale,
+            theme,
             device,
             queue,
             pipeline,
@@ -311,13 +318,16 @@ impl Renderer {
         }
     }
 
-    /// Cambia de escala (pantalla Retina o no): nuevas fuentes y atlas vacío.
-    pub fn set_scale(&mut self, scale: f64) {
-        if scale != self.scale {
+    /// Aplica la fuente, la escala (Retina o no) y el tema. Si cambia la
+    /// fuente o la escala, se recrean las fuentes y se vacía el atlas.
+    pub fn set_appearance(&mut self, font: &FontSpec, scale: f64, theme: Theme) {
+        if scale != self.scale || *font != self.font {
             self.scale = scale;
-            self.fonts = Fonts::new(crate::font::FONT_SIZE_PT * scale);
+            self.font = font.clone();
+            self.fonts = Fonts::new(font, scale);
             self.atlas.clear();
         }
+        self.theme = theme;
     }
 
     /// Ajusta la copia local de un panel al tamaño de su cuadrícula. Devuelve
@@ -375,7 +385,7 @@ impl Renderer {
         let pass = MTLRenderPassDescriptor::new();
         // SAFETY: el índice 0 siempre existe.
         let color = unsafe { pass.colorAttachments().objectAtIndexedSubscript(0) };
-        let bg = palette::to_rgba(palette::DEFAULT_BG, 1.0);
+        let bg = palette::to_rgba(self.theme.background, 1.0);
         color.setTexture(Some(texture));
         color.setLoadAction(MTLLoadAction::Clear);
         color.setStoreAction(MTLStoreAction::Store);
@@ -484,7 +494,7 @@ impl Renderer {
         for tab in &bar.tabs {
             let [x, y, w, h] = tab.rect;
             let (bg, fg) = if tab.active {
-                (palette::DEFAULT_BG, palette::DEFAULT_FG)
+                (self.theme.background, self.theme.foreground)
             } else {
                 (palette::TAB_BAR, palette::TAB_INACTIVE_FG)
             };
@@ -588,26 +598,27 @@ impl Renderer {
                 let x = ox + c as f32 * cw;
                 let w = cw * cells as f32;
 
-                let mut fg = palette::rgb(cell.fg, palette::DEFAULT_FG);
-                let mut bg = palette::rgb(cell.bg, palette::DEFAULT_BG);
+                let theme = self.theme;
+                let mut fg = palette::rgb(cell.fg, theme.foreground, &theme);
+                let mut bg = palette::rgb(cell.bg, theme.background, &theme);
                 if cell.flags.contains(Flags::INVERSE) {
                     std::mem::swap(&mut fg, &mut bg);
                 }
                 let is_cursor = modes.cursor_visible && cursor.row == r && cursor.col == c;
                 if is_cursor && pane.focused {
                     fg = bg;
-                    bg = palette::CURSOR;
+                    bg = theme.cursor;
                 } else if selected.is_some_and(|(a, b)| c >= a && c <= b) {
-                    bg = palette::SELECTION;
+                    bg = theme.selection;
                 }
-                if bg != palette::DEFAULT_BG {
+                if bg != theme.background {
                     self.quads
                         .push(fill([x, y, w, ch], palette::to_rgba(bg, 1.0)));
                 }
                 if is_cursor && !pane.focused {
                     // Cursor hueco en los paneles sin foco.
                     let t = m.stroke.max(1) as f32;
-                    let c = palette::to_rgba(palette::CURSOR, 1.0);
+                    let c = palette::to_rgba(theme.cursor, 1.0);
                     for rect in [
                         [x, y, w, t],
                         [x, y + ch - t, w, t],
@@ -678,6 +689,17 @@ mod tests {
 
     use super::*;
 
+    fn theme() -> Theme {
+        crate::config::Config::default().theme
+    }
+
+    fn test_font() -> FontSpec {
+        FontSpec {
+            family: None,
+            size_pt: 13.0,
+        }
+    }
+
     /// Layout de los tests: un solo panel que ocupa toda la textura.
     #[derive(Clone, Copy)]
     struct TestLayout {
@@ -699,7 +721,13 @@ mod tests {
         overlay: &Overlay,
     ) -> (TestLayout, crate::font::Metrics, Vec<u8>) {
         let device = create_device();
-        let mut r = Renderer::new(device.clone(), MTLPixelFormat::BGRA8Unorm, scale);
+        let mut r = Renderer::new(
+            device.clone(),
+            MTLPixelFormat::BGRA8Unorm,
+            &test_font(),
+            theme(),
+            scale,
+        );
         let m = r.fonts.metrics;
         let grid = term.grid();
         r.ensure_pane(0, grid.cols(), grid.rows());
@@ -802,7 +830,7 @@ mod tests {
         let mut term = Term::new(5, 2);
         term.advance("M\x1b[41m \x1b[0m日\r\n".as_bytes());
         let (layout, m, pixels) = render(&term, 2.0);
-        let bg = bgra(palette::DEFAULT_BG);
+        let bg = bgra(theme().background);
 
         let glyph = cell_pixels(layout, m, &pixels, 0, 0);
         assert!(
@@ -811,7 +839,11 @@ mod tests {
         );
         assert!(glyph.contains(&bg), "la celda de la M no conserva el fondo");
 
-        let red = bgra(palette::rgb(Color::Indexed(1), palette::DEFAULT_BG));
+        let red = bgra(palette::rgb(
+            Color::Indexed(1),
+            theme().background,
+            &theme(),
+        ));
         assert!(
             cell_pixels(layout, m, &pixels, 0, 1)
                 .iter()
@@ -832,7 +864,7 @@ mod tests {
         );
 
         // El cursor es un bloque del color del cursor.
-        let cursor = bgra(palette::CURSOR);
+        let cursor = bgra(theme().cursor);
         assert!(
             cell_pixels(layout, m, &pixels, 1, 0)
                 .iter()
@@ -856,8 +888,8 @@ mod tests {
             links: vec![(1, 2, 3)],
         };
         let (layout, m, pixels) = render_with(&term, 2.0, &overlay);
-        let sel = bgra(palette::SELECTION);
-        let bg = bgra(palette::DEFAULT_BG);
+        let sel = bgra(theme().selection);
+        let bg = bgra(theme().background);
         assert!(
             cell_pixels(layout, m, &pixels, 0, 1)
                 .iter()
@@ -890,7 +922,7 @@ mod tests {
         let mut term = Term::new(3, 1);
         term.advance(b"\x1b[?25l");
         let (layout, m, pixels) = render(&term, 1.0);
-        let bg = bgra(palette::DEFAULT_BG);
+        let bg = bgra(theme().background);
         assert!(
             cell_pixels(layout, m, &pixels, 0, 0)
                 .iter()
@@ -955,7 +987,13 @@ mod tests {
         };
         let scale = 2.0;
         let device = create_device();
-        let mut r = Renderer::new(device.clone(), MTLPixelFormat::BGRA8Unorm, scale);
+        let mut r = Renderer::new(
+            device.clone(),
+            MTLPixelFormat::BGRA8Unorm,
+            &test_font(),
+            theme(),
+            scale,
+        );
         let m = r.fonts.metrics;
         let (cw, ch) = (m.cell_w as f32, m.cell_h as f32);
         let pad = 12.0;

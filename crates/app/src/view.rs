@@ -27,18 +27,17 @@ use objc2_foundation::{
 use rust_terminal_core::selection;
 use rust_terminal_core::{MouseMode, Selection, SelectionKind, SelectionRange, TermEvent};
 
-use crate::font::{self, Metrics};
+use crate::config::Config;
+use crate::font::FontSpec;
+use crate::font::Metrics;
 use crate::input::{
     self, KeyEvent, KeyKind, KittyKey, KittyMods, Mods, MouseAction, MouseButton, kitty,
 };
 use crate::notify;
 use crate::renderer::{Layout, TabBar, TabItem};
-use crate::session::{AppEvent, Session};
+use crate::session::{AppEvent, Session, SpawnOptions};
 use crate::window::{PaneSlot, Waker, WindowFrame, WindowShared};
 use crate::workspace::{Axis, Direction, Divider, PaneId, Rect, Workspace};
-
-/// Margen interior de cada panel, en puntos.
-pub const PAD_PT: f64 = 6.0;
 
 /// Geometría calculada en el último layout, en píxeles, para el ratón.
 #[derive(Default)]
@@ -62,8 +61,10 @@ enum Drag {
 pub struct ViewIvars {
     window: Arc<WindowShared>,
     waker: OnceCell<Arc<Waker>>,
-    shell: String,
-    env: Vec<(String, String)>,
+    /// Configuración vigente (se recarga en caliente).
+    config: RefCell<Config>,
+    /// Entorno base de las shells (locale); la integración se añade por sesión.
+    base_env: Vec<(String, String)>,
     workspace: RefCell<Option<Workspace>>,
     sessions: RefCell<HashMap<PaneId, Arc<Session>>>,
     next_id: Cell<PaneId>,
@@ -72,7 +73,7 @@ pub struct ViewIvars {
     /// Texto en composición (tecla muerta o método de entrada).
     marked: RefCell<String>,
     /// Métricas para la escala actual, para no recalcularlas en cada resize.
-    metrics: Cell<Option<(f64, Metrics)>>,
+    metrics: RefCell<Option<(f64, FontSpec, Metrics)>>,
     /// Desplazamiento del trackpad acumulado que aún no llega a una línea.
     scroll_accum: Cell<f64>,
     /// El ratón se movió desde `mouseDown` (si no, un clic simple deselecciona).
@@ -453,21 +454,21 @@ impl TerminalView {
         mtm: MainThreadMarker,
         frame: NSRect,
         window: Arc<WindowShared>,
-        shell: String,
-        env: Vec<(String, String)>,
+        config: Config,
+        base_env: Vec<(String, String)>,
     ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(ViewIvars {
             window,
             waker: OnceCell::new(),
-            shell,
-            env,
+            config: RefCell::new(config),
+            base_env,
             workspace: RefCell::new(None),
             sessions: RefCell::new(HashMap::new()),
             next_id: Cell::new(1),
             geometry: RefCell::new(Geometry::default()),
             drag: RefCell::new(None),
             marked: RefCell::new(String::new()),
-            metrics: Cell::new(None),
+            metrics: RefCell::new(None),
             scroll_accum: Cell::new(0.0),
             drag_moved: Cell::new(false),
             hover_link: RefCell::new(None),
@@ -530,15 +531,38 @@ impl TerminalView {
         }
     }
 
-    fn metrics_for(&self, scale: f64) -> Metrics {
-        match self.ivars().metrics.get() {
-            Some((s, m)) if s == scale => m,
-            _ => {
-                let m = Metrics::of(&font::system_monospace(font::FONT_SIZE_PT * scale));
-                self.ivars().metrics.set(Some((scale, m)));
-                m
-            }
+    fn font_spec(&self) -> FontSpec {
+        let c = self.ivars().config.borrow();
+        FontSpec {
+            family: c.font_family.clone(),
+            size_pt: c.font_size,
         }
+    }
+
+    fn metrics_for(&self, scale: f64) -> Metrics {
+        let spec = self.font_spec();
+        if let Some((s, f, m)) = &*self.ivars().metrics.borrow()
+            && *s == scale
+            && *f == spec
+        {
+            return *m;
+        }
+        let m = Metrics::of(&spec.font(scale));
+        *self.ivars().metrics.borrow_mut() = Some((scale, spec, m));
+        m
+    }
+
+    // Lo usa la recarga en caliente (siguiente paso de M7).
+    #[allow(dead_code)]
+    /// Aplica una configuración nueva: lo que va en vivo se nota al momento
+    /// (fuente, colores, margen, avisos); shell e historial, en pestañas nuevas.
+    pub fn apply_config(&self, config: Config) {
+        for s in self.ivars().sessions.borrow().values() {
+            s.long_command_secs
+                .store(config.long_command_seconds, SeqCst);
+        }
+        *self.ivars().config.borrow_mut() = config;
+        self.update_layout();
     }
 
     // --- Sesiones ---
@@ -556,15 +580,21 @@ impl TerminalView {
             return false;
         };
         let ivars = self.ivars();
-        match Session::spawn(
-            id,
-            &ivars.shell,
-            &ivars.env,
-            cwd.as_deref(),
-            cols as u16,
-            rows as u16,
-            waker,
-        ) {
+        let config = ivars.config.borrow().clone();
+        let shell = config.shell();
+        let mut env = ivars.base_env.clone();
+        if config.shell_integration {
+            env.extend(crate::shell::integration_env(&shell));
+        }
+        let opts = SpawnOptions {
+            shell: &shell,
+            args: &config.shell_args,
+            env: &env,
+            cwd: cwd.as_deref(),
+            history_limit: config.scrollback_lines,
+            long_command_secs: config.long_command_seconds,
+        };
+        match Session::spawn(id, opts, cols as u16, rows as u16, waker) {
             Ok(session) => {
                 ivars.sessions.borrow_mut().insert(id, session);
                 true
@@ -744,7 +774,7 @@ impl TerminalView {
         Some(Geometry {
             scale,
             metrics: Some(m),
-            pad: (PAD_PT * scale).round(),
+            pad: (self.ivars().config.borrow().padding * scale).round(),
             tab_bar: Some(tab_bar),
             panes,
             dividers,
@@ -825,6 +855,8 @@ impl TerminalView {
                 })
                 .collect(),
             tab_bar: g.tab_bar.clone(),
+            theme: self.ivars().config.borrow().theme,
+            font: self.font_spec(),
         });
         *self.ivars().geometry.borrow_mut() = g;
         if let (Some(title), Some(window)) = (title, self.window()) {
@@ -1217,25 +1249,29 @@ impl TerminalView {
     pub fn process_events(&self) {
         let sessions: Vec<_> = self.ivars().sessions.borrow().values().cloned().collect();
         let away = !self.ivars().window_key.get();
+        let config = self.ivars().config.borrow().clone();
+        let notify = away && config.notifications;
         for s in sessions {
             for event in s.take_events() {
                 match event {
-                    AppEvent::Term(TermEvent::Clipboard(text)) => copy_to_pasteboard(&text),
-                    AppEvent::Term(TermEvent::Notification { title, body }) if away => {
+                    AppEvent::Term(TermEvent::Clipboard(text)) if config.clipboard_write => {
+                        copy_to_pasteboard(&text)
+                    }
+                    AppEvent::Term(TermEvent::Notification { title, body }) if notify => {
                         notify::notify(&title.unwrap_or_else(|| s.title()), &body);
                     }
                     AppEvent::CommandFinished {
                         command,
                         exit_code,
                         seconds,
-                    } if away => {
+                    } if notify => {
                         let title = match exit_code {
                             Some(0) | None => "Comando terminado".to_owned(),
                             Some(code) => format!("Comando fallido (código {code})"),
                         };
                         notify::notify(&title, &format!("{command} · {seconds} s"));
                     }
-                    AppEvent::Bell if away => {
+                    AppEvent::Bell if away && config.bell_dock_bounce => {
                         NSApplication::sharedApplication(self.mtm())
                             .requestUserAttention(NSRequestUserAttentionType::InformationalRequest);
                     }
