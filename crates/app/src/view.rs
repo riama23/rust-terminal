@@ -16,8 +16,8 @@ use objc2::runtime::{AnyObject, NSObjectProtocol, Sel};
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSApplication, NSCursor, NSEvent, NSEventModifierFlags,
-    NSMenuItem, NSPasteboard, NSPasteboardTypeString, NSResponder, NSTextInputClient, NSView,
-    NSWorkspace,
+    NSMenuItem, NSPasteboard, NSPasteboardTypeString, NSRequestUserAttentionType, NSResponder,
+    NSTextInputClient, NSView, NSWorkspace,
 };
 use objc2_core_foundation::CGSize;
 use objc2_foundation::{
@@ -25,14 +25,15 @@ use objc2_foundation::{
     NSRange, NSRect, NSSize, NSString, NSUInteger,
 };
 use rust_terminal_core::selection;
-use rust_terminal_core::{MouseMode, Selection, SelectionKind, SelectionRange};
+use rust_terminal_core::{MouseMode, Selection, SelectionKind, SelectionRange, TermEvent};
 
 use crate::font::{self, Metrics};
 use crate::input::{
     self, KeyEvent, KeyKind, KittyKey, KittyMods, Mods, MouseAction, MouseButton, kitty,
 };
+use crate::notify;
 use crate::renderer::{Layout, TabBar, TabItem};
-use crate::session::Session;
+use crate::session::{AppEvent, Session};
 use crate::window::{PaneSlot, Waker, WindowFrame, WindowShared};
 use crate::workspace::{Axis, Direction, Divider, PaneId, Rect, Workspace};
 
@@ -1208,6 +1209,39 @@ impl TerminalView {
             }
             *self.ivars().hover_link.borrow_mut() = hover;
             self.update_layout();
+        }
+    }
+
+    /// Atiende los eventos de las sesiones: portapapeles (OSC 52),
+    /// notificaciones (OSC 9/777/99 y comandos largos) y campana.
+    pub fn process_events(&self) {
+        let sessions: Vec<_> = self.ivars().sessions.borrow().values().cloned().collect();
+        let away = !self.ivars().window_key.get();
+        for s in sessions {
+            for event in s.take_events() {
+                match event {
+                    AppEvent::Term(TermEvent::Clipboard(text)) => copy_to_pasteboard(&text),
+                    AppEvent::Term(TermEvent::Notification { title, body }) if away => {
+                        notify::notify(&title.unwrap_or_else(|| s.title()), &body);
+                    }
+                    AppEvent::CommandFinished {
+                        command,
+                        exit_code,
+                        seconds,
+                    } if away => {
+                        let title = match exit_code {
+                            Some(0) | None => "Comando terminado".to_owned(),
+                            Some(code) => format!("Comando fallido (código {code})"),
+                        };
+                        notify::notify(&title, &format!("{command} · {seconds} s"));
+                    }
+                    AppEvent::Bell if away => {
+                        NSApplication::sharedApplication(self.mtm())
+                            .requestUserAttention(NSRequestUserAttentionType::InformationalRequest);
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 

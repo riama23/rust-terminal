@@ -7,14 +7,31 @@
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Child;
-use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use objc2::sel;
-use rust_terminal_core::{Pty, PtyReader, PtyWriter, Term};
+use rust_terminal_core::{Pty, PtyReader, PtyWriter, Term, TermEvent};
 
 use crate::window::Waker;
 use crate::workspace::PaneId;
+
+/// Duración a partir de la cual se avisa de que un comando terminó.
+const LONG_COMMAND: Duration = Duration::from_secs(10);
+
+/// Algo que la sesión le pide a la app (en el hilo principal).
+#[derive(Debug, Clone, PartialEq)]
+pub enum AppEvent {
+    Term(TermEvent),
+    Bell,
+    /// Terminó un comando largo (bloques OSC 133).
+    CommandFinished {
+        command: String,
+        exit_code: Option<i32>,
+        seconds: u64,
+    },
+}
 
 pub struct Session {
     pub id: PaneId,
@@ -26,6 +43,10 @@ pub struct Session {
     pub visible: AtomicBool,
     /// La shell terminó (el lector llegó al final).
     pub exited: AtomicBool,
+    /// Eventos pendientes para la app.
+    pending: Mutex<Vec<AppEvent>>,
+    /// Último bloque terminado que ya se revisó (para avisar una sola vez).
+    last_finished: AtomicU64,
 }
 
 impl Session {
@@ -51,6 +72,8 @@ impl Session {
             shell_name: shell.rsplit('/').next().unwrap_or(shell).to_owned(),
             visible: AtomicBool::new(true),
             exited: AtomicBool::new(false),
+            pending: Mutex::new(Vec::new()),
+            last_finished: AtomicU64::new(0),
         });
         start_reader(session.clone(), reader, child, waker);
         Ok(session)
@@ -112,6 +135,31 @@ impl Session {
             .is_some_and(|b| b.output.is_some() && !b.is_finished())
     }
 
+    /// Eventos pendientes para la app.
+    pub fn take_events(&self) -> Vec<AppEvent> {
+        std::mem::take(&mut self.pending.lock().unwrap())
+    }
+
+    /// Recoge del núcleo lo que la app tiene que hacer (con el bloqueo tomado).
+    fn collect_events(&self, term: &mut Term) -> Vec<AppEvent> {
+        let mut events: Vec<AppEvent> =
+            term.take_events().into_iter().map(AppEvent::Term).collect();
+        if term.take_bell() {
+            events.push(AppEvent::Bell);
+        }
+        if let Some(b) = term.last_finished_block()
+            && b.id > self.last_finished.swap(b.id, SeqCst)
+            && let Some(d) = b.duration().filter(|d| *d >= LONG_COMMAND)
+        {
+            events.push(AppEvent::CommandFinished {
+                command: b.command.clone().unwrap_or_default(),
+                exit_code: b.exit_code,
+                seconds: d.as_secs(),
+            });
+        }
+        events
+    }
+
     /// Aviso de foco (`?1004`) si la aplicación lo pidió.
     pub fn send_focus(&self, gained: bool) {
         if self.term.lock().unwrap().modes().focus_events {
@@ -135,11 +183,16 @@ fn start_reader(session: Arc<Session>, mut reader: PtyReader, mut child: Child, 
                     Ok(0) | Err(_) => break,
                     Ok(n) => n,
                 };
-                let (responses, title_changed) = {
+                let (responses, title_changed, events) = {
                     let mut term = session.term.lock().unwrap();
                     term.advance(&buf[..n]);
-                    (term.take_responses(), term.take_title_changed())
+                    let events = session.collect_events(&mut term);
+                    (term.take_responses(), term.take_title_changed(), events)
                 };
+                if !events.is_empty() {
+                    session.pending.lock().unwrap().extend(events);
+                    waker.on_main_thread(sel!(sessionEvents));
+                }
                 if !responses.is_empty() {
                     session.write(&responses);
                 }

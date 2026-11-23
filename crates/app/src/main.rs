@@ -3,6 +3,7 @@
 
 mod font;
 mod input;
+mod notify;
 mod palette;
 mod renderer;
 mod session;

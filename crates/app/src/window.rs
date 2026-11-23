@@ -6,6 +6,7 @@
 //! filas sucias de cada panel (bloqueo breve de su `Term`) y pinta. Si no hay
 //! cambios, pausa el display link: en reposo no hay frames.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
@@ -18,7 +19,7 @@ use objc2_foundation::{
     NSRunLoop, NSThread,
 };
 use objc2_quartz_core::{CADisplayLink, CAMetalLayer};
-use rust_terminal_core::{SelectionRange, Term};
+use rust_terminal_core::{Cursor, Modes, SelectionRange, Term};
 
 use crate::renderer::{Frame, Layout, Overlay, PaneFrame, Renderer, TabBar};
 use crate::session::Session;
@@ -117,6 +118,8 @@ pub struct TargetIvars {
     window: Arc<WindowShared>,
     renderer: Mutex<Option<Renderer>>,
     link: Mutex<Option<SendLink>>,
+    /// Último cursor y modos de cada panel, para repetirlos durante DEC 2026.
+    held: Mutex<HashMap<u64, (Cursor, Modes)>>,
 }
 
 define_class!(
@@ -150,6 +153,20 @@ define_class!(
             }
         }
 
+        /// Hay eventos de sesiones: portapapeles, notificaciones… (hilo principal).
+        #[unsafe(method(sessionEvents))]
+        fn session_events(&self) {
+            let mtm = MainThreadMarker::new().expect("hilo principal");
+            for window in NSApplication::sharedApplication(mtm).windows().iter() {
+                if let Some(view) = window
+                    .contentView()
+                    .and_then(|v| v.downcast::<crate::view::TerminalView>().ok())
+                {
+                    view.process_events();
+                }
+            }
+        }
+
         /// Cambió el título de una sesión o terminó alguna (hilo principal).
         #[unsafe(method(sessionsChanged))]
         fn sessions_changed(&self) {
@@ -176,6 +193,7 @@ impl RenderTarget {
             window,
             renderer: Mutex::new(None),
             link: Mutex::new(None),
+            held: Mutex::new(HashMap::new()),
         });
         // SAFETY: `init` de NSObject.
         unsafe { msg_send![super(this), init] }
@@ -206,10 +224,30 @@ impl RenderTarget {
         renderer.set_scale(wf.layout.scale);
 
         let mut panes = Vec::with_capacity(wf.panes.len());
+        let mut held = self.ivars().held.lock().unwrap();
+        let mut holding = false;
         for slot in &wf.panes {
             let id = slot.session.id;
             let mut term = slot.session.term.lock().unwrap();
             let (cols, rows) = (term.grid().cols(), term.grid().rows());
+            // DEC 2026: la aplicación está a mitad de una actualización. Se
+            // repite el último frame del panel hasta que termine (o venza el límite).
+            if term.synchronized()
+                && let Some(&(cursor, modes)) = held.get(&id)
+                && !renderer.ensure_pane(id, cols, rows)
+            {
+                holding = true;
+                panes.push(PaneFrame {
+                    id,
+                    rect: slot.rect,
+                    pad: slot.pad,
+                    cursor,
+                    modes,
+                    overlay: overlay(&term, rows, cols, slot.link),
+                    focused: slot.focused,
+                });
+                continue;
+            }
             if renderer.ensure_pane(id, cols, rows) {
                 for i in 0..rows {
                     renderer.update_row(id, i, term.visible_row(i));
@@ -225,6 +263,7 @@ impl RenderTarget {
             if cursor.row >= rows {
                 modes.cursor_visible = false;
             }
+            held.insert(id, (cursor, modes));
             panes.push(PaneFrame {
                 id,
                 rect: slot.rect,
@@ -234,6 +273,12 @@ impl RenderTarget {
                 overlay: overlay(&term, rows, cols, slot.link),
                 focused: slot.focused,
             });
+        }
+        held.retain(|id, _| wf.panes.iter().any(|p| p.session.id == *id));
+        drop(held);
+        if holding {
+            // Seguir con ticks para pintar en cuanto termine (o venza) DEC 2026.
+            window.dirty.store(true, SeqCst);
         }
         renderer.retain_panes(|id| wf.panes.iter().any(|p| p.session.id == id));
         let frame = Frame {
