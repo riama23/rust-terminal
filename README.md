@@ -6,7 +6,11 @@ Emulador de terminal para macOS escrito en Rust, pensado para trabajar con agent
 
 - **Rápido y nativo:** AppKit, Metal y Core Text, sin capas intermedias.
 - **Sin gasto en reposo:** si no cambia nada en pantalla, no se dibuja ningún frame.
-- **Buen anfitrión de aplicaciones de terminal:** colores de 24 bits, pantalla alternativa (vim, htop, less…), caracteres anchos (CJK y emoji) y pegado seguro (bracketed paste).
+- **Buen anfitrión de aplicaciones de terminal:**
+  - colores de 24 bits, pantalla alternativa (vim, htop, less…) y caracteres anchos (CJK y emoji);
+  - pegado seguro (bracketed paste), salida sincronizada y protocolo de teclado de kitty (por ejemplo, Shift+Enter en Claude Code);
+  - ratón en las aplicaciones (htop, vim, tmux), enlaces y portapapeles por OSC 52;
+  - notificaciones del sistema.
 - **Pestañas y paneles divididos**, con una barra de pestañas propia.
 - **Bloques de comandos:** con zsh, la terminal sabe dónde empieza y acaba cada comando y con qué código terminó. Puedes saltar entre comandos y copiar la salida del último.
 
@@ -48,6 +52,7 @@ La terminal abre tu shell (`$SHELL`, o `/bin/zsh` si no está definida) como she
 | Cerrar el panel / la pestaña | Cmd+W / Cmd+Shift+W |
 | Ir a la pestaña 1…9 | Cmd+1…9 |
 | Pestaña anterior / siguiente | Cmd+Shift+[ / Cmd+Shift+] |
+| Abrir un enlace | Cmd+clic |
 | Copiar la selección | Cmd+C |
 | Copiar la salida del último comando | Cmd+Shift+C |
 | Pegar | Cmd+V |
@@ -58,13 +63,16 @@ La terminal abre tu shell (`$SHELL`, o `/bin/zsh` si no está definida) como she
 - **Historial:** desplázate con el trackpad o la rueda (hasta 10.000 líneas). Al escribir, la vista vuelve abajo. En programas a pantalla completa como `less` o `vim`, la rueda desplaza el documento.
 - **Selección:** arrastra para seleccionar, haz doble clic para seleccionar una palabra y triple clic para una línea. Shift+clic amplía la selección y Option+arrastrar selecciona un rectángulo.
 - **Bloques (solo zsh):** cada comando lleva una marca en el margen izquierdo, que sale roja si falló. Para eso la terminal añade una pequeña integración a zsh sin tocar tus archivos de configuración. Puedes desactivarla abriendo la app con la variable `RT_NO_SHELL_INTEGRATION=1`.
-- **Teclado:** Option escribe caracteres, como en el resto de macOS. En el teclado español, por ejemplo, Option+2 da `@`. Las teclas muertas (`´` y luego `e` → `é`) funcionan.
+- **Teclado:** la **Option izquierda** funciona como Meta (Option+b/f para moverse por palabras en zsh, Option+Enter…). La **Option derecha** escribe caracteres como en el resto de macOS; en el teclado español, por ejemplo, Option+2 da `@`. Las teclas muertas (`´` y luego `e` → `é`) funcionan.
+- **Ratón en las aplicaciones:** si un programa usa el ratón (htop, vim con `mouse=a`, tmux), los clics le llegan a él. Para seleccionar texto de todas formas, mantén Shift.
+- **Enlaces:** mantén Cmd para ver subrayados los enlaces y las URL; Cmd+clic los abre.
+- **Portapapeles:** los programas pueden copiar al portapapeles (OSC 52, útil por ssh o en tmux), pero no pueden leerlo.
+- **Notificaciones:** con la ventana en segundo plano, los programas pueden mostrar notificaciones (Claude Code, por ejemplo). También avisa cuando termina un comando de más de 10 segundos. Funcionan al abrir la app como `.app`; la primera vez, macOS pide permiso.
 - **Configuración:** la fuente es SF Mono de 13 pt y los colores son fijos. Ambas cosas se podrán configurar más adelante.
 
 ## Limitaciones actuales
 
 - Solo hay una ventana; las pestañas no se pueden reordenar arrastrándolas.
-- Las aplicaciones no reciben eventos de ratón; la rueda en `less` o `vim` funciona porque se envía como flechas.
 - Los bloques solo funcionan con zsh.
 - Mientras se escribe una tecla muerta no se ve nada hasta pulsar la segunda tecla.
 - No hay archivo de configuración.

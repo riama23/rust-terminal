@@ -17,6 +17,7 @@ Workspace de Rust (edition 2024) con dos crates. Sus nombres son provisionales h
   - `font`: Core Text.
   - `input`: codificación de teclas, pura y con tests.
   - `palette`: los colores.
+  - `notify`: notificaciones con `UNUserNotificationCenter`. Solo funcionan desde el `.app`; con `cargo run` van a stderr.
   - `shell`: inyección para zsh. Los scripts están en `crates/app/shell/zsh/`.
 
 El diseño de abajo está acordado con el usuario; los temas de "Abierto" no se deciden sin preguntar.
@@ -35,8 +36,15 @@ El diseño de abajo está acordado con el usuario; los temas de "Abierto" no se 
   - bloques con OSC 133 y OSC 7, e inyección para zsh;
   - selección con el ratón, Cmd+C, Cmd+Shift+C y scroll con el trackpad.
 - **M5, implementado y en verificación manual** (lista en `docs/verificacion-m5.md`): barra de pestañas propia, paneles divididos, directorio heredado por OSC 7 y confirmación al cerrar si hay un programa en marcha.
-- **M6:** DEC 2026, Kitty keyboard, OSC 8 y 52, notificaciones y reporte de ratón (`?1000`/`?1002`/`?1006`).
-- **M7:** configuración TOML (fuente, colores, Option como Meta…).
+- **M6, implementado y en verificación manual** (lista en `docs/verificacion-m6.md`):
+  - DEC 2026 con un límite de 150 ms, DECRQM y XTVERSION;
+  - teclado kitty (todos los niveles), modifyOtherKeys y Option izquierda como Meta;
+  - reporte de ratón (`?1000`, `?1002`, `?1003`, `?1006`), foco (`?1004`) y `?1007`;
+  - OSC 8 y URL con Cmd+clic;
+  - OSC 52 solo de escritura;
+  - notificaciones (OSC 9, 777 y 99, y comandos de más de 10 s) con la ventana inactiva;
+  - la campana hace rebotar el icono del Dock.
+- **M7:** configuración TOML (fuente, colores, qué Option es Meta, permisos de OSC 52, aviso de comandos largos…).
 - **Pospuesto:** comparación con Ghostty y Alacritty. Hay que instalarlos, y Java para Typometer.
 
 **Modelo de hilos (`session.rs` y `window.rs`):**
@@ -67,6 +75,11 @@ El diseño de abajo está acordado con el usuario; los temas de "Abierto" no se 
 - ED 3 se ignora hasta que exista el scrollback.
 - macOS no acepta `O_CLOEXEC` en `posix_openpt`, así que se pone después con `fcntl`. Para evitar que otro `fork` herede el maestro en ese hueco, **todas las sesiones se lanzan desde el hilo principal**; hay que mantenerlo así.
 - **Throughput de `bench-core`:** 106–179 MiB/s. Con el historial, el texto plano bajó de unos 148 a unos 106 MiB/s, porque se compactan las filas y se reserva memoria en cada línea. Está pendiente de optimizar.
+
+**Eventos del núcleo a la app:**
+- El núcleo deja en `Term::take_events` el portapapeles (OSC 52) y las notificaciones. Nunca actúa por su cuenta.
+- La sesión los recoge en el lector, añade la campana y los comandos largos, y avisa al hilo principal (`sessionEvents`).
+- La vista decide qué hacer según si la ventana está activa.
 
 **Pendiente en la app:**
 - El texto en composición no se dibuja: tras `´` no aparece nada hasta la segunda tecla.
