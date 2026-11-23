@@ -162,9 +162,11 @@ define_class!(
 
     impl DebugPanel {
         #[unsafe(method(drawRect:))]
-        fn draw_rect(&self, rect: NSRect) {
-            NSColor::colorWithSRGBRed_green_blue_alpha(0.09, 0.09, 0.11, 1.0).setFill();
-            NSRectFill(rect);
+        fn draw_rect(&self, _rect: NSRect) {
+            NSColor::colorWithSRGBRed_green_blue_alpha(0.17, 0.19, 0.24, 1.0).setFill();
+            // Solo los límites propios: desde macOS 14 las vistas no recortan
+            // su dibujo, y el `rect` recibido puede ser mayor que la vista.
+            NSRectFill(self.bounds());
         }
     }
 );

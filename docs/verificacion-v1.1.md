@@ -41,4 +41,6 @@ Comprobado con `osascript` (`tell application "rust-terminal" to quit`): con la 
 
 ## Estado
 
-El reparto calculado se comprobó con una traza temporal (ya retirada): sin panel, la terminal ocupa `(0,0,812,505)`; con el panel de 240 pt, queda en `(240,0,572,505)`. **La comprobación visual y la del ratón siguen pendientes**: `screencapture` devuelve una imagen negra.
+El reparto calculado se comprobó con una traza temporal (ya retirada): sin panel, la terminal ocupa `(0,0,812,505)`; con el panel de 240 pt, queda en `(240,0,572,505)`. **Comprobado a ojo** (`scripts/window-shot.sh`, captura solo la ventana): sin panel, la terminal se pinta con su barra de pestañas y el prompt; con `RT_DEBUG_SIDEBAR=1`, el panel ocupa 240 pt a la izquierda y la terminal el resto. **Sigue pendiente la comprobación del ratón** (celda bajo el puntero con el panel puesto) y el resto de la lista.
+
+**Regla para toda vista propia:** desde macOS 14 una vista no recorta su dibujo a sus límites. Hay que rellenar `self.bounds()`, no el `rect` que llega a `drawRect:`; si no, el relleno invade a las vistas vecinas. Una ventana lanzada desde otra app no pinta Metal hasta ponerla al frente (`osascript -e 'tell application "rust-terminal" to activate'`).
