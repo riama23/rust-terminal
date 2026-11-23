@@ -171,6 +171,20 @@ define_class!(
             }
         }
 
+        /// Cambió el archivo de configuración (hilo principal).
+        #[unsafe(method(configChanged))]
+        fn config_changed(&self) {
+            let mtm = MainThreadMarker::new().expect("hilo principal");
+            for window in NSApplication::sharedApplication(mtm).windows().iter() {
+                if let Some(view) = window
+                    .contentView()
+                    .and_then(|v| v.downcast::<crate::view::TerminalView>().ok())
+                {
+                    view.reload_config();
+                }
+            }
+        }
+
         /// Cambió el título de una sesión o terminó alguna (hilo principal).
         #[unsafe(method(sessionsChanged))]
         fn sessions_changed(&self) {

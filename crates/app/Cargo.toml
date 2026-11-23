@@ -16,3 +16,4 @@ objc2-core-foundation = { version = "0.3", features = ["CFString", "CFCGTypes", 
 block2 = "0.6"
 objc2-user-notifications = { version = "0.3", features = ["UNUserNotificationCenter", "UNNotificationRequest", "UNNotificationContent", "UNNotificationTrigger", "block2"] }
 toml = "1"
+rustix = { version = "1.1", features = ["event", "fs"] }

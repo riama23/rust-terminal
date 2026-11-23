@@ -10,6 +10,7 @@ mod renderer;
 mod session;
 mod shell;
 mod view;
+mod watcher;
 mod window;
 mod workspace;
 
@@ -287,10 +288,10 @@ fn open_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
     // Tamaño inicial a partir de las métricas de la pantalla principal
     // (contando la barra de pestañas).
     let scale = NSScreen::mainScreen(mtm).map_or(2.0, |s| s.backingScaleFactor());
-    let (config, errors) = Config::load();
-    for e in &errors {
-        eprintln!("configuración: {e}");
-    }
+    let (config, errors) = match Config::load() {
+        Ok(loaded) => loaded,
+        Err(e) => (Config::default(), vec![e]),
+    };
     let spec = font::FontSpec {
         family: config.font_family.clone(),
         size_pt: config.font_size,
@@ -351,6 +352,13 @@ fn open_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
         // SAFETY: `tick:` existe en RenderTarget y recibe el display link.
         unsafe { view.displayLinkWithTarget_selector(target, sel!(tick:)) }
     });
-    view.start(waker);
+    view.start(waker.clone());
+    if !errors.is_empty() {
+        view.show_config_errors(&errors);
+    }
+    // Recarga en caliente: el vigilante avisa al hilo principal.
+    watcher::watch(Config::path(), move || {
+        waker.on_main_thread(sel!(configChanged))
+    });
     window
 }

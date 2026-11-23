@@ -362,9 +362,10 @@ impl Config {
         }
     }
 
-    /// Lee un archivo de configuración. Lo que no es válido se ignora (queda
-    /// el valor por defecto) y se describe en la lista de errores.
-    pub fn parse(text: &str) -> (Config, Vec<String>) {
+    /// Lee un archivo de configuración. Una opción no válida se ignora (queda
+    /// su valor por defecto) y se describe en la lista de errores. Un error de
+    /// sintaxis TOML devuelve `Err`: entonces se conserva la configuración anterior.
+    pub fn parse(text: &str) -> Result<(Config, Vec<String>), String> {
         let mut config = Config::default();
         let mut errors = Vec::new();
         let table: toml::Table = match text.parse() {
@@ -374,12 +375,11 @@ impl Config {
                 let line = e
                     .span()
                     .map(|s| text[..s.start.min(text.len())].matches('\n').count() + 1);
-                let msg = e.message().to_owned();
-                errors.push(match line {
+                let msg = e.message().trim().to_owned();
+                return Err(match line {
                     Some(l) => format!("línea {l}: {msg}"),
                     None => msg,
                 });
-                return (config, errors);
             }
         };
         for (section, value) in &table {
@@ -401,7 +401,7 @@ impl Config {
                 }
             }
         }
-        (config, errors)
+        Ok((config, errors))
     }
 
     pub fn path() -> PathBuf {
@@ -415,11 +415,13 @@ impl Config {
     }
 
     /// Lee la configuración del usuario. Sin archivo, la de por defecto.
-    pub fn load() -> (Config, Vec<String>) {
+    pub fn load() -> Result<(Config, Vec<String>), String> {
         match std::fs::read_to_string(Config::path()) {
             Ok(text) => Config::parse(&text),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Config::default(), Vec::new()),
-            Err(e) => (Config::default(), vec![format!("no se pudo leer: {e}")]),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Ok((Config::default(), Vec::new()))
+            }
+            Err(e) => Err(format!("no se pudo leer: {e}")),
         }
     }
 
@@ -531,7 +533,7 @@ mod tests {
             }
             text.push_str(&format!("{} = {}\n", spec.key, spec.default));
         }
-        let (c, errors) = Config::parse(&text);
+        let (c, errors) = Config::parse(&text).unwrap();
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(c, Config::default());
         let docs = docs_markdown();
@@ -558,7 +560,8 @@ integration = false
 [clipboard]
 read = "ask"
 "##,
-        );
+        )
+        .unwrap();
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(c.font_family.as_deref(), Some("JetBrains Mono"));
         assert_eq!(c.font_size, 15.0);
@@ -588,7 +591,8 @@ read = "sometimes"
 [nope]
 x = 1
 "##,
-        );
+        )
+        .unwrap();
         assert_eq!(c, Config::default());
         assert_eq!(errors.len(), 6, "{errors:#?}");
         assert!(
@@ -613,9 +617,8 @@ x = 1
 
     #[test]
     fn syntax_errors_report_the_line() {
-        let (c, errors) = Config::parse("[font]\nsize = 14\nfamily = \n");
-        assert_eq!(c, Config::default());
-        assert!(errors[0].starts_with("línea 3"), "{errors:?}");
+        let error = Config::parse("[font]\nsize = 14\nfamily = \n").unwrap_err();
+        assert!(error.starts_with("línea 3"), "{error}");
     }
 
     /// `docs/configuracion.md` está al día con la tabla de opciones.

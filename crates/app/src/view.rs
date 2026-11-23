@@ -552,8 +552,6 @@ impl TerminalView {
         m
     }
 
-    // Lo usa la recarga en caliente (siguiente paso de M7).
-    #[allow(dead_code)]
     /// Aplica una configuración nueva: lo que va en vivo se nota al momento
     /// (fuente, colores, margen, avisos); shell e historial, en pestañas nuevas.
     pub fn apply_config(&self, config: Config) {
@@ -1242,6 +1240,38 @@ impl TerminalView {
             *self.ivars().hover_link.borrow_mut() = hover;
             self.update_layout();
         }
+    }
+
+    /// Vuelve a leer la configuración (el archivo cambió). Con un error de
+    /// sintaxis se conserva la anterior; con opciones no válidas, se ignoran
+    /// solo esas. En ambos casos se muestra un aviso.
+    pub fn reload_config(&self) {
+        match Config::load() {
+            Ok((config, errors)) => {
+                self.apply_config(config);
+                if !errors.is_empty() {
+                    self.show_config_errors(&errors);
+                }
+            }
+            Err(e) => self.show_config_errors(&[e]),
+        }
+    }
+
+    /// Hoja de aviso (no bloqueante) con los errores de la configuración.
+    pub fn show_config_errors(&self, errors: &[String]) {
+        let Some(window) = self.window() else { return };
+        if let Some(sheet) = window.attachedSheet() {
+            window.endSheet(&sheet);
+        }
+        let alert = NSAlert::new(self.mtm());
+        alert.setMessageText(&NSString::from_str("Hay errores en la configuración"));
+        let list: Vec<String> = errors.iter().map(|e| format!("• {e}")).collect();
+        alert.setInformativeText(&NSString::from_str(&format!(
+            "{}\n\n{}\n\nSe han ignorado; el resto de la configuración está aplicada.",
+            Config::path().display(),
+            list.join("\n")
+        )));
+        alert.beginSheetModalForWindow_completionHandler(&window, None);
     }
 
     /// Atiende los eventos de las sesiones: portapapeles (OSC 52),
