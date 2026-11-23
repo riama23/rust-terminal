@@ -8,9 +8,11 @@ Workspace de Rust (edition 2024) con dos crates. Sus nombres son provisionales h
 
 - `crates/core` → `rust-terminal-core`: PTY (`pty`), cuadrícula con historial, reflow y filas sucias (`grid`), estado más parser `vte` (`term`), bloques OSC 133 (`block`) y selección (`selection`). No puede depender de nada de interfaz ni de macOS más allá de POSIX. Incluye el binario `bench-core`.
 - `crates/app` → `rust-terminal`: la app de AppKit y Metal.
-  - `main`: arranque de la app, menú y ventana. La ventana se crea en `applicationDidFinishLaunching:`.
-  - `view`: `NSView` con `NSTextInputClient`, que se encarga del teclado, el pegado y el redimensionado.
-  - `session`: los hilos.
+  - `main`: arranque de la app, menús, confirmación al salir y la ventana, que se crea en `applicationDidFinishLaunching:`.
+  - `view`: `NSView` con `NSTextInputClient`. Se encarga de las pestañas, los paneles, el teclado, el ratón y el layout.
+  - `workspace`: modelo puro de pestañas y árbol de paneles, con tests.
+  - `session`: una sesión por panel (PTY, `Term` y el hilo lector).
+  - `window`: el hilo de render de la ventana con `CADisplayLink`.
   - `renderer`: Metal, con un atlas de glifos y un draw instanciado de quads.
   - `font`: Core Text.
   - `input`: codificación de teclas, pura y con tests.
@@ -32,14 +34,15 @@ El diseño de abajo está acordado con el usuario; los temas de "Abierto" no se 
   - scrollback de 10.000 líneas y reflow;
   - bloques con OSC 133 y OSC 7, e inyección para zsh;
   - selección con el ratón, Cmd+C, Cmd+Shift+C y scroll con el trackpad.
-- **M5:** pestañas y paneles.
+- **M5, implementado y en verificación manual** (lista en `docs/verificacion-m5.md`): barra de pestañas propia, paneles divididos, directorio heredado por OSC 7 y confirmación al cerrar si hay un programa en marcha.
 - **M6:** DEC 2026, Kitty keyboard, OSC 8 y 52, notificaciones y reporte de ratón (`?1000`/`?1002`/`?1006`).
 - **M7:** configuración TOML (fuente, colores, Option como Meta…).
 - **Pospuesto:** comparación con Ghostty y Alacritty. Hay que instalarlos, y Java para Typometer.
 
-**Modelo de hilos (`crates/app/src/session.rs`):**
-- **Lector de la PTY:** hace `advance` por lotes con el `Mutex<Term>` tomado, escribe las respuestas (DA/DSR) y pide un frame.
-- **Render:** tiene su propio `NSRunLoop` y un `CADisplayLink`, creado por la vista y enganchado con `performSelector:onThread:`.
+**Modelo de hilos (`session.rs` y `window.rs`):**
+- **Lector de la PTY (uno por panel):** hace `advance` por lotes con el `Mutex<Term>` tomado y escribe las respuestas (DA/DSR). Solo pide un frame si el panel está visible.
+- **Layout:** el hilo principal calcula los rectángulos de la barra, los paneles y los divisores, y publica un `WindowFrame`. El render pinta lo que hay en él.
+- **Render (uno por ventana):** tiene su propio `NSRunLoop` y un `CADisplayLink`, creado por la vista y enganchado con `performSelector:onThread:`.
   - En cada tick copia las filas sucias y pinta.
   - Si no hay cambios, pausa el display link.
   - El protocolo de `dirty`/`running` en `on_tick` y `Waker::request_frame` evita perder avisos; si se cambia, hay que conservar esa propiedad.
@@ -62,7 +65,7 @@ El diseño de abajo está acordado con el usuario; los temas de "Abierto" no se 
 - Los caracteres de ancho 0 (combinantes, ZWJ) se descartan.
 - Solo existe G0, con ASCII o gráficos de línea DEC. SO/SI no tienen efecto.
 - ED 3 se ignora hasta que exista el scrollback.
-- macOS no acepta `O_CLOEXEC` en `posix_openpt`, así que se pone después con `fcntl`. Con varias sesiones (M5), un `fork` concurrente podría heredar el maestro de otra; hay que revisarlo entonces.
+- macOS no acepta `O_CLOEXEC` en `posix_openpt`, así que se pone después con `fcntl`. Para evitar que otro `fork` herede el maestro en ese hueco, **todas las sesiones se lanzan desde el hilo principal**; hay que mantenerlo así.
 - **Throughput de `bench-core`:** 106–179 MiB/s. Con el historial, el texto plano bajó de unos 148 a unos 106 MiB/s, porque se compactan las filas y se reserva memoria en cada línea. Está pendiente de optimizar.
 
 **Pendiente en la app:**

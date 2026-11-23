@@ -7,6 +7,7 @@ Emulador de terminal para macOS escrito en Rust, pensado para trabajar con agent
 - **Rápido y nativo:** AppKit, Metal y Core Text, sin capas intermedias.
 - **Sin gasto en reposo:** si no cambia nada en pantalla, no se dibuja ningún frame.
 - **Buen anfitrión de aplicaciones de terminal:** colores de 24 bits, pantalla alternativa (vim, htop, less…), caracteres anchos (CJK y emoji) y pegado seguro (bracketed paste).
+- **Pestañas y paneles divididos**, con una barra de pestañas propia.
 - **Bloques de comandos:** con zsh, la terminal sabe dónde empieza y acaba cada comando y con qué código terminó. Puedes saltar entre comandos y copiar la salida del último.
 
 > **Estado:** en desarrollo, todavía no sirve para el uso diario. Mira [Limitaciones actuales](#limitaciones-actuales).
@@ -41,12 +42,19 @@ La terminal abre tu shell (`$SHELL`, o `/bin/zsh` si no está definida) como she
 
 | Acción | Atajo |
 |---|---|
+| Nueva pestaña | Cmd+T |
+| Dividir en vertical / en horizontal | Cmd+D / Cmd+Shift+D |
+| Mover el foco entre paneles | Cmd+Option+flechas |
+| Cerrar el panel / la pestaña | Cmd+W / Cmd+Shift+W |
+| Ir a la pestaña 1…9 | Cmd+1…9 |
+| Pestaña anterior / siguiente | Cmd+Shift+[ / Cmd+Shift+] |
 | Copiar la selección | Cmd+C |
 | Copiar la salida del último comando | Cmd+Shift+C |
 | Pegar | Cmd+V |
 | Ir al comando anterior / siguiente | Cmd+↑ / Cmd+↓ |
 | Salir | Cmd+Q |
 
+- **Pestañas y paneles:** las pestañas y los paneles nuevos se abren en la carpeta del panel activo. Un clic en un panel le da el foco y los divisores se pueden arrastrar. Si al cerrar hay un programa en marcha (por ejemplo, vim o Claude Code), la terminal pide confirmación.
 - **Historial:** desplázate con el trackpad o la rueda (hasta 10.000 líneas). Al escribir, la vista vuelve abajo. En programas a pantalla completa como `less` o `vim`, la rueda desplaza el documento.
 - **Selección:** arrastra para seleccionar, haz doble clic para seleccionar una palabra y triple clic para una línea. Shift+clic amplía la selección y Option+arrastrar selecciona un rectángulo.
 - **Bloques (solo zsh):** cada comando lleva una marca en el margen izquierdo, que sale roja si falló. Para eso la terminal añade una pequeña integración a zsh sin tocar tus archivos de configuración. Puedes desactivarla abriendo la app con la variable `RT_NO_SHELL_INTEGRATION=1`.
@@ -55,7 +63,7 @@ La terminal abre tu shell (`$SHELL`, o `/bin/zsh` si no está definida) como she
 
 ## Limitaciones actuales
 
-- No hay pestañas ni paneles divididos.
+- Solo hay una ventana; las pestañas no se pueden reordenar arrastrándolas.
 - Las aplicaciones no reciben eventos de ratón; la rueda en `less` o `vim` funciona porque se envía como flechas.
 - Los bloques solo funcionan con zsh.
 - Mientras se escribe una tecla muerta no se ve nada hasta pulsar la segunda tecla.
