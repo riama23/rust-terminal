@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Genera un .app local (sin notarizar, firma ad hoc) a partir del binario.
 # Uso: scripts/bundle.sh [debug|release]   (por defecto: release)
-# El nombre y el identificador son provisionales hasta decidir el nombre del producto.
+# El nombre sale de PRODUCT_NAME (crates/core/src/lib.rs), provisional hasta decidirlo.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 command -v cargo >/dev/null || . "$HOME/.cargo/env"
 
 PROFILE="${1:-release}"
-NAME="RustTerminal"
-BUNDLE_ID="local.rust-terminal"
+NAME="$(sed -n 's/^pub const PRODUCT_NAME: \&str = "\(.*\)";/\1/p' crates/core/src/lib.rs)"
+BUNDLE_ID="local.$NAME"
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' crates/app/Cargo.toml | head -1)"
 
 if [[ "$PROFILE" == "release" ]]; then

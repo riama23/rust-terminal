@@ -1425,10 +1425,13 @@ impl Perform for Screen {
             ([b'?', b'$'], 'p') => return self.report_private_mode(raw(params, 0)),
             // XTVERSION.
             ([b'>'], 'q') => {
-                return self.responses.extend_from_slice(
-                    concat!("\x1bP>|rust-terminal ", env!("CARGO_PKG_VERSION"), "\x1b\\")
-                        .as_bytes(),
+                let _ = write!(
+                    Bytes(&mut self.responses),
+                    "\x1bP>|{} {}\x1b\\",
+                    crate::PRODUCT_NAME,
+                    env!("CARGO_PKG_VERSION")
                 );
+                return;
             }
             ([k @ (b'>' | b'<' | b'=' | b'?')], 'u') => return self.kitty_keyboard(*k, params),
             // modifyOtherKeys: `CSI > 4 ; n m`.

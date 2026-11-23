@@ -7,7 +7,7 @@ Lista de comprobación del hito M2+M3 (ventana, hilos, entrada y mediciones). Lo
 1. Generar y abrir la app con logs:
    ```sh
    scripts/bundle.sh release
-   open -n --stderr /tmp/rt.log --env RT_FRAME_STATS=1 --env RT_LOG_UNHANDLED=1 target/release/RustTerminal.app
+   open -n --stderr /tmp/rt.log --env RT_FRAME_STATS=1 --env RT_LOG_UNHANDLED=1 target/release/rust-terminal.app
    ```
 2. Si queda detrás de otra ventana, ir a ella con Cmd+Tab. macOS no pinta una ventana tapada.
 3. Al terminar, revisar `/tmp/rt.log`. Debe mostrar `[frames/s] 0` en reposo y las secuencias no soportadas que hayan llegado.

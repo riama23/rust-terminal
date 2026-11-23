@@ -1,6 +1,9 @@
 //! Aplicación de macOS: una ventana con pestañas y paneles, render con Metal
 //! y la shell del usuario en una PTY por panel.
 
+// Se conecta al resto de la app en el siguiente paso de M7.
+#[allow(dead_code)]
+mod config;
 mod font;
 mod input;
 mod notify;
@@ -24,7 +27,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{
     MainThreadMarker, NSLocale, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect,
-    NSSize, NSString, ns_string,
+    NSSize, NSString,
 };
 use objc2_metal::MTLPixelFormat;
 use objc2_quartz_core::{CAMetalLayer, kCAGravityTopLeft};
@@ -323,7 +326,7 @@ fn open_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
     };
     // SAFETY: ventana creada fuera de un window controller.
     unsafe { window.setReleasedWhenClosed(false) };
-    window.setTitle(ns_string!("rust-terminal"));
+    window.setTitle(&NSString::from_str(rust_terminal_core::PRODUCT_NAME));
 
     let view = TerminalView::new(
         mtm,

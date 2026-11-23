@@ -3,6 +3,10 @@
 //! No depende de nada de interfaz ni de macOS más allá de POSIX; el
 //! renderizado vive en otro crate.
 
+/// Nombre del producto (provisional hasta que se decida). Fija la ruta de
+/// configuración, el nombre del `.app` y la respuesta a XTVERSION.
+pub const PRODUCT_NAME: &str = "rust-terminal";
+
 pub mod block;
 pub mod grid;
 pub mod links;

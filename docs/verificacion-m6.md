@@ -12,7 +12,7 @@ Estos puntos necesitan la ventana real y las aplicaciones.
 
 ```sh
 scripts/bundle.sh release
-open -n --stderr /tmp/rt.log --env RT_FRAME_STATS=1 --env RT_LOG_UNHANDLED=1 target/release/RustTerminal.app
+open -n --stderr /tmp/rt.log --env RT_FRAME_STATS=1 --env RT_LOG_UNHANDLED=1 target/release/rust-terminal.app
 ```
 
 Las notificaciones solo funcionan desde el `.app`. La primera vez, macOS pide permiso.

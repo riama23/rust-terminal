@@ -30,10 +30,10 @@ Clona el repositorio y genera la aplicación:
 scripts/bundle.sh release
 ```
 
-Se crea `target/release/RustTerminal.app`. Puedes abrirla con doble clic o con:
+Se crea `target/release/rust-terminal.app`. Puedes abrirla con doble clic o con:
 
 ```sh
-open target/release/RustTerminal.app
+open target/release/rust-terminal.app
 ```
 
 Si quieres tenerla en el Launchpad y en Spotlight, cópiala a `/Applications`. La app solo lleva firma local (ad hoc) y no está notarizada, así que es para uso personal en tu propio Mac.
@@ -82,7 +82,7 @@ La terminal abre tu shell (`$SHELL`, o `/bin/zsh` si no está definida) como she
 Para obtener información de diagnóstico, abre la app con estas variables:
 
 ```sh
-open -n --stderr /tmp/rt.log --env RT_LOG_UNHANDLED=1 --env RT_FRAME_STATS=1 target/release/RustTerminal.app
+open -n --stderr /tmp/rt.log --env RT_LOG_UNHANDLED=1 --env RT_FRAME_STATS=1 target/release/rust-terminal.app
 ```
 
 - `RT_LOG_UNHANDLED=1` apunta las secuencias de escape que la terminal todavía no entiende. Si un programa se ve mal, adjunta ese log al avisar.
