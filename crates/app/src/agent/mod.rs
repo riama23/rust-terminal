@@ -6,8 +6,10 @@
 
 pub mod broker;
 pub mod http;
+pub mod hub;
 pub mod launch;
 pub mod model;
+pub mod rules;
 
 #[cfg(test)]
 mod e2e;
