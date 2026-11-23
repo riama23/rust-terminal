@@ -2,6 +2,7 @@
 //! y la shell del usuario en una PTY por panel.
 
 mod config;
+mod container;
 mod font;
 mod icon;
 mod input;
@@ -34,6 +35,7 @@ use objc2_metal::MTLPixelFormat;
 use objc2_quartz_core::{CAMetalLayer, kCAGravityTopLeft};
 
 use crate::config::Config;
+use crate::container::ContainerView;
 use crate::font::Metrics;
 use crate::view::TerminalView;
 use crate::window::WindowShared;
@@ -365,7 +367,15 @@ fn open_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
     );
     view.setLayer(Some(&layer));
     view.setWantsLayer(true);
-    window.setContentView(Some(&view));
+    // La terminal es una subvista de un contenedor que deja sitio a paneles
+    // laterales (sidebar, inspector). Sin ellos ocupa toda la ventana.
+    let container = ContainerView::new(mtm, NSRect::new(NSPoint::new(0.0, 0.0), content));
+    container.set_terminal(&view);
+    if std::env::var_os("RT_DEBUG_SIDEBAR").is_some() {
+        let panel = container::DebugPanel::new(mtm);
+        container.set_left(Some((&panel, 240.0)));
+    }
+    window.setContentView(Some(&container));
     window.center();
     window.makeKeyAndOrderFront(None);
     window.makeFirstResponder(Some(&view));

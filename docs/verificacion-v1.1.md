@@ -1,0 +1,38 @@
+# Verificación manual de la v1.1
+
+Lista de comprobación de la v1.1: la ventana pasa a tener un contenedor (`ContainerView`, `crates/app/src/container.rs`) y la `TerminalView` es una subvista. Los tests automáticos cubren el reparto de anchos (`split_widths`). Estos puntos necesitan la ventana real.
+
+**Criterio de salida:** la terminal se comporta exactamente igual que antes, y se puede añadir una vista lateral sin tocar el render.
+
+## Cómo probar
+
+```sh
+scripts/bundle.sh release
+open -n --stderr /tmp/rt.log --env RT_FRAME_STATS=1 target/release/rust-terminal.app
+# con un panel lateral de prueba de 240 pt a la izquierda:
+open -n --stderr /tmp/rt.log --env RT_DEBUG_SIDEBAR=1 target/release/rust-terminal.app
+```
+
+## Sin panel lateral (comportamiento previo)
+
+- [ ] Repetir las listas `verificacion-m2-m3.md` a `verificacion-m7.md`: ninguna regresión.
+- [ ] El teclado, las teclas muertas y la composición (acentos, ñ) funcionan; el texto compuesto aparece en el cursor.
+- [ ] El ratón: clic en pestañas y paneles, arrastre de divisores, selección, scroll del trackpad y Cmd+clic en enlaces.
+- [ ] Redimensionar la ventana en vivo no estira ni parpadea el contenido.
+- [ ] Pantalla completa y volver: el tamaño de la cuadrícula (`stty size`) es correcto.
+- [ ] Mover la ventana entre una pantalla Retina y otra con distinta escala redibuja nítido.
+- [ ] En reposo, `RT_FRAME_STATS` marca 0 frames/s.
+
+## Con `RT_DEBUG_SIDEBAR=1`
+
+- [ ] Aparece una franja oscura de 240 pt a la izquierda y la terminal ocupa el resto.
+- [ ] La barra de pestañas y los paneles se dibujan solo en el área de la terminal.
+- [ ] El ratón sobre la terminal da la celda correcta (selecciona el texto bajo el puntero, no desplazado 240 pt).
+- [ ] Cmd+clic en un enlace abre el enlace bajo el puntero.
+- [ ] Al estrechar la ventana, la franja se encoge antes de que la terminal baje de 320 pt.
+- [ ] El IME y las teclas muertas muestran el texto compuesto en el sitio correcto.
+- [ ] Las notificaciones y el rebote del Dock siguen funcionando.
+
+## Estado
+
+El reparto calculado se comprobó con una traza temporal (ya retirada): sin panel, la terminal ocupa `(0,0,812,505)`; con el panel de 240 pt, queda en `(240,0,572,505)`. **La comprobación visual y la del ratón están pendientes**: la captura de pantalla falla sin el permiso de Grabación de pantalla.
