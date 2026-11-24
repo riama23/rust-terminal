@@ -13,6 +13,7 @@ mod icon;
 mod input;
 mod notify;
 mod palette;
+mod proc;
 mod renderer;
 mod report;
 mod review_controller;

@@ -254,6 +254,7 @@ pub fn display_command(args: &[String]) -> String {
 /// Eventos que se reciben como hook HTTP. `PermissionRequest` y los de
 /// herramientas solo interesan para `Bash` y demás: sin `matcher`, todos.
 const HTTP_EVENTS: &[&str] = &[
+    "UserPromptSubmit",
     "PermissionRequest",
     "PreToolUse",
     "PostToolUse",

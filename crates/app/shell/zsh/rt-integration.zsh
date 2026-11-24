@@ -79,10 +79,36 @@ __rt_line_init() {
   builtin print -rn -- $'\e]133;B\a'
 }
 
+# `claude` lanzado a mano: se le pasan los hooks de esta terminal para que el
+# agente salga en la sidebar. Solo en uso interactivo; un subcomando (`mcp`,
+# `update`...), `-p`, `--bg`, `--settings` propio... va tal cual.
+__rt_claude() {
+  emulate -L zsh
+  local plain=0 a
+  if [[ ! -r ${RT_CLAUDE_SETTINGS-} ]]; then
+    plain=1
+  elif (( $# )) && [[ $1 == (agents|attach|auth|auto-mode|doctor|gateway|import|install|logs|mcp|plugin|plugins|purge|respawn|rm|setup-token|stop|kill|ultrareview|update|upgrade) ]]; then
+    plain=1
+  else
+    for a in "$@"; do
+      [[ $a == (-p|--print|--bg|-h|--help|-v|--version|--settings|--settings=*) ]] && { plain=1; break; }
+    done
+  fi
+  if (( plain )); then
+    command claude "$@"
+  else
+    command claude --settings "$RT_CLAUDE_SETTINGS" "$@"
+  fi
+}
+
 __rt_deferred_init() {
   emulate -L zsh
   precmd_functions=(__rt_save_status ${precmd_functions:#(__rt_deferred_init|__rt_save_status|__rt_precmd)} __rt_precmd)
   preexec_functions+=(__rt_preexec)
+  # Sin pisar un `claude` del usuario (función o alias definidos en .zshrc).
+  if [[ -n ${RT_CLAUDE_SETTINGS-} ]] && (( ! ${+functions[claude]} && ! ${+aliases[claude]} )); then
+    functions[claude]='__rt_claude "$@"'
+  fi
   builtin autoload -Uz add-zle-hook-widget
   add-zle-hook-widget zle-line-init __rt_line_init
   # Este primer prompt: los hooks recién colocados aún no han corrido.

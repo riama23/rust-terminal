@@ -194,7 +194,7 @@ Permite a un agente abrir sesiones, enviar teclas, leer la pantalla y leer bloqu
 - Nombre del producto (`PRODUCT_NAME`). Bloquea la distribución y la ruta de configuración definitiva.
 - Licencia, código abierto, firma, notarización, Homebrew, actualizaciones, soporte para Intel y versiones anteriores de macOS.
 - Límite de memoria del scrollback.
-- Sesiones lanzadas fuera de la app (`claude agents --json`, `claude attach`) y reanudación tras reiniciar (`claude --resume`).
+- Sesiones en segundo plano (`claude --bg`, `claude agents --json`, `claude attach`) y reanudación tras reiniciar (`claude --resume`). Un `claude` escrito a mano en un panel sí se reconoce (decisión 12).
 - Editor de entrada propio, con chips, sugerencias en línea y completado.
 - Terminfo propio, integración con bash y fish.
 
@@ -241,7 +241,7 @@ Respuestas a las tres rondas de preguntas, todas aceptadas.
 9. Matching sin `tool_use_id`: `session_id` y orden de llegada (el hash de `tool_input` se descartó tras el spike). Ante ambigüedad, no se decide y gana el prompt de Claude Code.
 10. Denegar con motivo: campo `message` y nada más. Tras el spike se reabrió (llega a Claude como resultado de herramienta, no como mensaje del usuario) y se confirmó así.
 11. Un agente es un panel con `claude --settings …`, en pestaña propia y siempre en Classic.
-12. Sesiones externas y reanudación tras reinicio, diferidas.
+12. Un `claude` lanzado a mano en un panel entra en la sidebar (v1.5.x): con zsh, una función `claude` le pasa los hooks de la app; con otras shells solo se detecta el proceso («En marcha»). `claude --bg`, `attach` y la reanudación tras reiniciar siguen diferidos.
 13. Rama: se acepta `worktree-<name>` de Claude Code, y el spec se corrige en consecuencia.
 14. *Siempre permitir* escribe en `.claude/settings.local.json`.
 15. Layout por defecto Classic hasta los bloques visuales.

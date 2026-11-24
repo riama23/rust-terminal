@@ -17,6 +17,7 @@ use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSApplication, NSMenu, NSMenuItem, NSStatusItem, NSTextField,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+use serde_json::Value;
 
 use crate::agent::alerts::Action;
 use crate::agent::broker::{AgentKey, Broker, BrokerEvent, Decision, PermissionRequest};
@@ -90,6 +91,11 @@ struct Inner {
     projects: HashMap<AgentKey, PathBuf>,
     /// Dónde trabaja cada agente: su worktree o, sin él, el proyecto.
     workdirs: HashMap<AgentKey, PathBuf>,
+    /// Claves de los paneles normales (`RT_CLAUDE_SETTINGS`): no salen en la
+    /// sidebar hasta que un `claude` lanzado a mano manda su primer evento.
+    dormant: HashMap<AgentKey, PaneId>,
+    /// Agentes adoptados de una clave dormida, con «ya tiene título del prompt».
+    manual: HashMap<AgentKey, bool>,
     sidebar: Option<Retained<SidebarView>>,
     sidebar_shown: bool,
     bar: Option<Retained<AttentionBar>>,
@@ -113,6 +119,60 @@ struct Inner {
     autosend_fired: bool,
 }
 
+impl Inner {
+    /// Un `claude` lanzado a mano terminó: la clave vuelve a dormir en su
+    /// panel por si lanza otro.
+    fn end_manual(&mut self, key: &str) {
+        let pane = self.hub.pane_of(key);
+        self.hub.remove(key);
+        self.manual.remove(key);
+        self.projects.remove(key);
+        self.workdirs.remove(key);
+        if let Some(pane) = pane {
+            self.dormant.insert(key.to_owned(), pane);
+        }
+    }
+
+    /// El primer evento de una clave dormida convierte el panel en un agente
+    /// de la sidebar. `true` si pasó. `StatusLine` no adopta (llega también
+    /// tras `SessionEnd`).
+    fn adopt(&mut self, event: &BrokerEvent) -> bool {
+        let (key, cwd) = match event {
+            BrokerEvent::Hook {
+                agent,
+                event: name,
+                payload,
+            } if name != "SessionEnd" => (agent, payload.get("cwd").and_then(Value::as_str)),
+            BrokerEvent::Permission(p) => (&p.agent, Some(p.cwd.as_str())),
+            _ => return false,
+        };
+        let Some(pane) = self.dormant.remove(key) else {
+            return false;
+        };
+        // Lo había detectado ya el proceso: la entrada completa lo sustituye.
+        if let Some(old) = self.hub.key_of_pane(pane).cloned() {
+            self.hub.remove(&old);
+        }
+        let dir = cwd.filter(|c| !c.is_empty()).map(PathBuf::from);
+        let title = dir
+            .as_deref()
+            .map_or_else(|| "Claude".to_owned(), folder_title);
+        self.hub.add_running(key.clone(), title, pane, false);
+        self.manual.insert(key.clone(), false);
+        if let Some(dir) = dir {
+            self.projects.insert(key.clone(), dir.clone());
+            self.workdirs.insert(key.clone(), dir);
+        }
+        true
+    }
+}
+
+/// Nombre de carpeta para el título de un agente lanzado a mano.
+fn folder_title(dir: &std::path::Path) -> String {
+    dir.file_name()
+        .map_or_else(|| "Claude".to_owned(), |n| n.to_string_lossy().into_owned())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Bottom {
     #[default]
@@ -124,7 +184,7 @@ enum Bottom {
 fn status_color(status: &Status) -> [u8; 3] {
     match status {
         Status::NeedsYou { .. } => dusk::ATTENTION,
-        Status::Working | Status::PlanReady => dusk::ACCENT,
+        Status::Working | Status::Running | Status::PlanReady => dusk::ACCENT,
         Status::Error => dusk::ERROR,
         Status::Done => dusk::OK,
         Status::Ended => dusk::MUTED,
@@ -174,27 +234,12 @@ impl TerminalView {
     /// Abre una pestaña nueva con `claude` y registra el agente.
     pub fn launch_agent(&self, spec: LaunchSpec, project: PathBuf) -> Result<(), String> {
         spec.validate().map_err(|e| e.to_string())?;
-        let waker = self
-            .waker_arc()
-            .ok_or("La ventana aún no está lista.".to_owned())?;
-        crate::notify::install_agent_support(waker.clone());
+        self.ensure_broker()?;
         let state = self.agents();
 
-        // Broker y carpeta de archivos, la primera vez.
+        // Clave y archivos del agente.
         let (broker_key, files) = {
-            let mut inner = state.inner.borrow_mut();
-            if inner.broker.is_none() {
-                let queue = inner.queue.clone();
-                let broker = Broker::start(PERMISSION_DEADLINE, move |event| {
-                    queue.lock().unwrap().push(event);
-                    waker.on_main_thread(sel!(agentEvents));
-                })
-                .map_err(|e| format!("No se pudo arrancar el broker: {e}"))?;
-                inner.broker = Some(broker);
-                let base = std::env::temp_dir();
-                launch::remove_stale_dirs(&base, launch::process_alive);
-                inner.dir = Some(launch::agents_dir(&base, std::process::id()));
-            }
+            let inner = state.inner.borrow_mut();
             let broker = inner.broker.as_ref().expect("recién creado");
             let key = broker.register_agent().map_err(|e| e.to_string())?;
             let home = std::env::var_os("HOME")
@@ -252,6 +297,107 @@ impl TerminalView {
         Ok(())
     }
 
+    /// Arranca el broker y la carpeta de archivos la primera vez.
+    fn ensure_broker(&self) -> Result<(), String> {
+        let state = self.agents();
+        if state.inner.borrow().broker.is_some() {
+            return Ok(());
+        }
+        let waker = self
+            .waker_arc()
+            .ok_or("La ventana aún no está lista.".to_owned())?;
+        crate::notify::install_agent_support(waker.clone());
+        let queue = state.inner.borrow().queue.clone();
+        let broker = Broker::start(PERMISSION_DEADLINE, move |event| {
+            queue.lock().unwrap().push(event);
+            waker.on_main_thread(sel!(agentEvents));
+        })
+        .map_err(|e| format!("No se pudo arrancar el broker: {e}"))?;
+        let mut inner = state.inner.borrow_mut();
+        inner.broker = Some(broker);
+        let base = std::env::temp_dir();
+        launch::remove_stale_dirs(&base, launch::process_alive);
+        inner.dir = Some(launch::agents_dir(&base, std::process::id()));
+        Ok(())
+    }
+
+    /// Variable de entorno de un panel normal: apunta a los `settings` con los
+    /// hooks de la app, que la función `claude` de zsh añade a un `claude`
+    /// lanzado a mano. `None` si algo falla (el panel sigue como siempre).
+    pub(crate) fn manual_claude_env(
+        &self,
+        pane: PaneId,
+        cwd: Option<&std::path::Path>,
+    ) -> Option<(String, String)> {
+        self.ensure_broker().ok()?;
+        let state = self.agents();
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        let project = cwd.map_or_else(|| home.clone(), std::path::Path::to_path_buf);
+        let user_statusline = launch::find_user_statusline(&home, &project);
+        let (key, settings) = {
+            let inner = state.inner.borrow();
+            let broker = inner.broker.as_ref()?;
+            let dir = inner.dir.clone()?;
+            let key = broker.register_agent().ok()?;
+            match launch::write_agent_files(&dir, broker, &key, user_statusline.as_deref()) {
+                Ok(files) => (key, files.settings),
+                Err(_) => {
+                    broker.forget_agent(&key);
+                    return None;
+                }
+            }
+        };
+        state.inner.borrow_mut().dormant.insert(key, pane);
+        Some((
+            "RT_CLAUDE_SETTINGS".to_owned(),
+            settings.to_string_lossy().into_owned(),
+        ))
+    }
+
+    /// Claude Code pasó a ser (o dejó de ser) el programa en primer plano de
+    /// un panel. Respaldo para lo que no manda hooks: «En marcha», sin más.
+    pub fn claude_foreground(&self, pane: PaneId, claude: bool) {
+        let state = self.agents();
+        let changed = {
+            let mut inner = state.inner.borrow_mut();
+            let existing = inner.hub.key_of_pane(pane).cloned();
+            match (claude, existing) {
+                (true, None) => {
+                    let title = self
+                        .session(pane)
+                        .and_then(|s| s.cwd())
+                        .map_or_else(|| "Claude".to_owned(), |c| folder_title(&c));
+                    inner
+                        .hub
+                        .add_running(format!("pane-{pane}"), title, pane, true);
+                    true
+                }
+                (false, Some(key)) => {
+                    let limited = inner
+                        .hub
+                        .sessions()
+                        .iter()
+                        .any(|s| s.key == key && s.limited);
+                    if limited {
+                        inner.hub.remove(&key);
+                        true
+                    } else if inner.manual.contains_key(&key) {
+                        inner.end_manual(&key);
+                        true
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            }
+        };
+        if changed {
+            self.refresh_agent_ui();
+        }
+    }
+
     fn discard_agent(&self, key: &str) {
         let mut inner = self.agents().inner.borrow_mut();
         if let Some(broker) = &inner.broker {
@@ -262,6 +408,8 @@ impl TerminalView {
         }
         inner.projects.remove(key);
         inner.workdirs.remove(key);
+        inner.manual.remove(key);
+        inner.dormant.remove(key);
         inner.hub.remove(key);
     }
 
@@ -299,6 +447,19 @@ impl TerminalView {
         for key in &gone {
             self.discard_agent(key);
         }
+        // Claves dormidas de paneles que ya no existen.
+        let stale: Vec<AgentKey> = {
+            let inner = self.agents().inner.borrow();
+            inner
+                .dormant
+                .iter()
+                .filter(|(_, p)| !self.pane_exists(**p))
+                .map(|(k, _)| k.clone())
+                .collect()
+        };
+        for key in &stale {
+            self.discard_agent(key);
+        }
         if !gone.is_empty() {
             self.refresh_agent_ui();
         }
@@ -328,6 +489,34 @@ impl TerminalView {
         {
             let mut inner = self.agents().inner.borrow_mut();
             for event in &events {
+                changed |= inner.adopt(event);
+                if let BrokerEvent::Hook {
+                    agent,
+                    event: name,
+                    payload,
+                } = event
+                    && inner.manual.contains_key(agent)
+                {
+                    match name.as_str() {
+                        // La sesión acabó: sale de la sidebar.
+                        "SessionEnd" => {
+                            inner.end_manual(agent);
+                            changed = true;
+                            continue;
+                        }
+                        // Recién abierta: sigue «En marcha» hasta que haga algo.
+                        "SessionStart" => continue,
+                        // El primer prompt da título a la fila.
+                        "UserPromptSubmit" if inner.manual.get(agent) == Some(&false) => {
+                            let prompt = payload.get("prompt").and_then(Value::as_str);
+                            if let Some(prompt) = prompt.filter(|p| !p.trim().is_empty()) {
+                                inner.hub.set_title(agent, first_words(prompt, 40));
+                                inner.manual.insert(agent.clone(), true);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
                 let (c, alert) = inner.hub.apply_with_alert(event, active);
                 changed |= c;
                 alerts.extend(alert);
@@ -979,9 +1168,25 @@ pub fn default_project_dir(cwd: Option<PathBuf>) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::{Value, json};
+    use serde_json::json;
 
     use crate::agent::broker::Ended;
+
+    fn hook(agent: &str, event: &str, payload: Value) -> BrokerEvent {
+        BrokerEvent::Hook {
+            agent: agent.into(),
+            event: event.into(),
+            payload,
+        }
+    }
+
+    fn row(inner: &Inner) -> Option<(String, Status, bool)> {
+        inner
+            .hub
+            .sessions()
+            .first()
+            .map(|s| (s.title.clone(), s.status.clone(), s.limited))
+    }
 
     fn perm(agent: &str, id: u64, tool: &str) -> BrokerEvent {
         BrokerEvent::Permission(PermissionRequest {
@@ -1077,5 +1282,64 @@ mod tests {
             done_text(&[row(3, 1), row(10, 0)]),
             "Terminó el turno · 2 archivos (+13 −1)"
         );
+    }
+
+    #[test]
+    fn a_dormant_key_becomes_an_agent_on_its_first_event() {
+        let mut inner = Inner::default();
+        inner.dormant.insert("k".into(), 7);
+        // Un `StatusLine` suelto (llega también tras `SessionEnd`) no adopta.
+        let status = BrokerEvent::StatusLine {
+            agent: "k".into(),
+            payload: json!({}),
+        };
+        assert!(!inner.adopt(&status));
+        assert!(inner.hub.is_empty());
+
+        let start = hook("k", "SessionStart", json!({"cwd": "/work/mi-proyecto"}));
+        assert!(inner.adopt(&start));
+        assert_eq!(
+            row(&inner),
+            Some(("mi-proyecto".into(), Status::Running, false))
+        );
+        assert_eq!(inner.hub.pane_of("k"), Some(7));
+        assert_eq!(inner.workdirs["k"], PathBuf::from("/work/mi-proyecto"));
+        assert!(!inner.dormant.contains_key("k"));
+        // Ya adoptada: otro evento no vuelve a adoptar.
+        assert!(!inner.adopt(&start));
+    }
+
+    #[test]
+    fn a_permission_also_adopts() {
+        let mut inner = Inner::default();
+        inner.dormant.insert("k".into(), 3);
+        assert!(inner.adopt(&perm("k", 1, "Bash")));
+        assert_eq!(inner.hub.pane_of("k"), Some(3));
+    }
+
+    #[test]
+    fn the_full_entry_replaces_the_one_seen_by_process() {
+        let mut inner = Inner::default();
+        inner.dormant.insert("k".into(), 7);
+        inner
+            .hub
+            .add_running("pane-7".into(), "Claude".into(), 7, true);
+        assert_eq!(row(&inner).map(|r| r.2), Some(true));
+        assert!(inner.adopt(&hook("k", "PreToolUse", json!({"cwd": "/a/b"}))));
+        assert_eq!(inner.hub.sessions().len(), 1);
+        assert_eq!(row(&inner), Some(("b".into(), Status::Running, false)));
+    }
+
+    #[test]
+    fn ending_returns_the_key_to_its_pane() {
+        let mut inner = Inner::default();
+        inner.dormant.insert("k".into(), 7);
+        inner.adopt(&hook("k", "SessionStart", json!({"cwd": "/a/b"})));
+        inner.end_manual("k");
+        assert!(inner.hub.is_empty());
+        assert_eq!(inner.dormant.get("k"), Some(&7));
+        // El siguiente `claude` del panel vuelve a adoptarse.
+        assert!(inner.adopt(&hook("k", "SessionStart", json!({"cwd": "/a/c"}))));
+        assert_eq!(row(&inner).map(|r| r.0), Some("c".into()));
     }
 }

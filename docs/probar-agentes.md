@@ -39,6 +39,7 @@ La app **no necesita** Accesibilidad ni Grabación de pantalla. El atajo global 
 3. Pasa a otra aplicación y vuelve a pedir un permiso: sale una **notificación** con *Permitir una vez*, *Enviar respuesta* y *Abrir*. Mientras haya sesiones que te esperan, el **Dock** muestra su número y la **barra de menús** lista los agentes.
 4. Cuando el agente termina un turno aparece la **barra de terminado**. **⌘⇧R** (o su botón) abre la **revisión**: pasa el ratón por una línea, pulsa «+», escribe el comentario y, al final, *Enviar N comentarios a Claude*. Solo se envían con el agente terminado.
 5. **⌃⌥N** desde cualquier aplicación abre «Nuevo agente».
+6. **`claude` lanzado a mano.** En una pestaña normal (abierta **después** de instalar esta versión), escribe `claude` y una tarea. Con zsh, el agente entra en la sidebar al arrancar con el nombre de la carpeta, toma como título el primer prompt y funciona como uno de ⌘N: estados, barra de atención, notificaciones y revisión. Sale al terminar la sesión. Con otra shell (bash, fish) solo se ve «En marcha»: sin permisos ni revisión. Se desactiva con `agents.track_manual_claude = false`. Si tienes tu propia función o alias `claude`, la app no lo pisa (y entonces solo hay «En marcha»).
 
 La lista completa de comprobaciones está en `docs/verificacion-v1.2.md`, `v1.3` y `v1.4`. Lo que sale mal, como issue: **Cmd+Shift+I** en el panel afectado.
 
