@@ -19,6 +19,7 @@ use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 use crate::agent::broker::AgentKey;
 use crate::agent::diff::DiffFile;
 use crate::agent::git;
+use crate::agent::model::Status;
 use crate::agent::review::{self, Review, ReviewError, Side};
 use crate::review_ui::{FileRow, ReviewActions, ReviewRoot};
 use crate::view::TerminalView;
@@ -272,12 +273,10 @@ impl TerminalView {
         ) else {
             return;
         };
-        let busy = match self.agents().status_of(&key) {
-            Some(crate::agent::model::Status::Working)
-            | Some(crate::agent::model::Status::NeedsYou { .. })
-            | Some(crate::agent::model::Status::PlanReady) => true,
-            _ => false,
-        };
+        let busy = matches!(
+            self.agents().status_of(&key),
+            Some(Status::Working | Status::Running | Status::NeedsYou { .. } | Status::PlanReady)
+        );
         if busy {
             self.info(
                 "El agente sigue activo",
