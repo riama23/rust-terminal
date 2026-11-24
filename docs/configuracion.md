@@ -156,6 +156,16 @@ Orden para «Abrir en el editor» (⌘O) con `{path}`, `{line}` y `{col}`, por e
 - **Por defecto:** `""`
 - **Se aplica:** en vivo
 
+## `[control]`
+
+### `enabled`
+
+API de control por agentes (experimental): un socket Unix privado y el comando `rt` para que un agente de una terminal liste sesiones, lea pantalla y bloques y, con tu permiso, escriba en ellas. **Leer funciona con el token** (que reciben todas las shells de la app); teclear, abrir y cerrar piden permiso. Se aplica al reiniciar.
+
+- **Tipo:** `true` o `false`
+- **Por defecto:** `true`
+- **Se aplica:** pestañas nuevas
+
 ## `[quick_terminal]`
 
 ### `enabled`

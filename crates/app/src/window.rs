@@ -260,6 +260,13 @@ define_class!(
             }
         }
 
+        /// Hay peticiones de la API de control (hilo principal).
+        #[unsafe(method(controlRequests))]
+        fn control_requests(&self) {
+            let mtm = MainThreadMarker::new().expect("hilo principal");
+            crate::control_controller::process(mtm);
+        }
+
         /// ⌥Espacio: muestra u oculta el terminal rápido.
         #[unsafe(method(globalQuickTerminal))]
         fn global_quick_terminal(&self) {

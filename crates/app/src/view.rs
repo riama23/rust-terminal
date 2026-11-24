@@ -54,6 +54,17 @@ struct Geometry {
     headers: Vec<(PaneId, Rect)>,
 }
 
+/// Contador de identificadores de vista (ventana) de la API de control.
+static NEXT_VIEW_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
+/// Un panel visto desde la API de control.
+pub(crate) struct PaneInfo {
+    pub tab: usize,
+    pub pane: PaneId,
+    pub active_tab: bool,
+    pub focused: bool,
+}
+
 /// Qué se está arrastrando con el ratón.
 enum Drag {
     Divider(Divider),
@@ -102,6 +113,10 @@ pub struct ViewIvars {
     quick: Cell<bool>,
     /// Texto a la derecha de la barra de pestañas («fijado» en el quick terminal).
     tab_note: RefCell<Option<String>>,
+    /// Aviso de que un agente controla esta terminal (API de control, v2).
+    control_note: RefCell<Option<String>>,
+    /// Identificador de la vista (único en el proceso), para los de sesión de la API.
+    view_id: u32,
     /// Bloque seleccionado con ⌘↑/⌘↓: panel e identificador.
     pub(crate) selected_block: Cell<Option<(PaneId, u64)>>,
     /// Bloques colapsados (panel e identificador).
@@ -388,6 +403,12 @@ define_class!(
         }
 
         /// ⌘⇧↵: el panel con el foco ocupa toda la pestaña.
+        #[unsafe(method(clearControlNote))]
+        fn clear_control_note(&self) {
+            *self.ivars().control_note.borrow_mut() = None;
+            self.update_layout();
+        }
+
         /// Vuelve a mirar el primer plano de todos los paneles.
         #[unsafe(method(recheckForeground))]
         fn recheck_foreground(&self) {
@@ -721,6 +742,8 @@ impl TerminalView {
             opacity: Cell::new(1.0),
             quick: Cell::new(false),
             tab_note: RefCell::new(None),
+            control_note: RefCell::new(None),
+            view_id: NEXT_VIEW_ID.fetch_add(1, SeqCst),
             selected_block: Cell::new(None),
             collapsed_blocks: Default::default(),
             agents: Default::default(),
@@ -729,6 +752,61 @@ impl TerminalView {
         });
         // SAFETY: `initWithFrame:` de NSView.
         unsafe { msg_send![super(this), initWithFrame: frame] }
+    }
+
+    /// Los paneles de esta ventana, para la API de control.
+    pub(crate) fn pane_infos(&self) -> Vec<PaneInfo> {
+        self.with_workspace(|w| {
+            w.tabs
+                .iter()
+                .enumerate()
+                .flat_map(|(i, tab)| {
+                    tab.panes().into_iter().map(move |pane| PaneInfo {
+                        tab: i,
+                        pane,
+                        active_tab: i == w.active,
+                        focused: pane == tab.focused,
+                    })
+                })
+                .collect()
+        })
+    }
+
+    pub(crate) fn view_id(&self) -> u32 {
+        self.ivars().view_id
+    }
+
+    /// Abre una pestaña nueva con una shell en `cwd` (API de control).
+    pub(crate) fn control_open_tab(&self, cwd: Option<std::path::PathBuf>) -> Option<PaneId> {
+        let cwd = cwd.or_else(|| self.focused_session().and_then(|s| s.cwd()));
+        let id = self.alloc_id();
+        self.with_workspace_mut(|w| w.new_tab(id));
+        if !self.spawn_session(id, cwd) {
+            self.with_workspace_mut(|w| w.close_pane(id));
+            self.update_layout();
+            return None;
+        }
+        self.update_layout();
+        Some(id)
+    }
+
+    /// Cierra un panel sin preguntar (la API ya pidió permiso).
+    pub(crate) fn control_close_pane(&self, id: PaneId) -> bool {
+        if self.session(id).is_none() {
+            return false;
+        }
+        self.close_pane(id);
+        true
+    }
+
+    /// «Controlado por <agente>» a la derecha de la barra de pestañas, unos segundos.
+    pub(crate) fn flash_control_note(&self, who: &str) {
+        *self.ivars().control_note.borrow_mut() = Some(format!("control: {who}"));
+        self.update_layout();
+        // SAFETY: `clearControlNote` existe en esta clase y no lleva argumentos.
+        let _: () = unsafe {
+            msg_send![self, performSelector: sel!(clearControlNote), withObject: None::<&AnyObject>, afterDelay: 8.0f64]
+        };
     }
 
     /// Esta vista es la del quick terminal.
@@ -746,6 +824,10 @@ impl TerminalView {
     pub(crate) fn quick_config(&self) -> (f64, f64) {
         let c = self.ivars().config.borrow();
         (c.quick_height, c.quick_opacity)
+    }
+
+    pub(crate) fn control_enabled(&self) -> bool {
+        self.ivars().config.borrow().control_enabled
     }
 
     pub(crate) fn quick_enabled(&self) -> bool {
@@ -1090,6 +1172,8 @@ impl TerminalView {
                 (shell, config.shell_args.clone())
             }
         };
+        // La API de control (v2): socket y token para los agentes de esta shell.
+        env.extend(crate::control_controller::env());
         let opts = SpawnOptions {
             shell: &shell,
             args: &args,
@@ -1340,7 +1424,12 @@ impl TerminalView {
             tabs,
             plus: [(n * tab_w) as f32, 0.0, plus_w as f32, bar_h as f32],
             spinner_phase: self.ivars().spinner_phase.get(),
-            note: self.ivars().tab_note.borrow().clone(),
+            note: self
+                .ivars()
+                .control_note
+                .borrow()
+                .clone()
+                .or_else(|| self.ivars().tab_note.borrow().clone()),
         };
 
         let area = Rect {

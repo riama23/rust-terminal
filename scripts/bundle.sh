@@ -12,9 +12,9 @@ BUNDLE_ID="local.$NAME"
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' crates/app/Cargo.toml | head -1)"
 
 if [[ "$PROFILE" == "release" ]]; then
-    cargo build --release -p rust-terminal
+    cargo build --release -p rust-terminal -p rust-terminal-ctl
 else
-    cargo build -p rust-terminal
+    cargo build -p rust-terminal -p rust-terminal-ctl
 fi
 
 APP="target/$PROFILE/$NAME.app"
@@ -22,6 +22,9 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "target/$PROFILE/rust-terminal" "$APP/Contents/MacOS/rust-terminal"
 cp crates/app/assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+# `rt`: la línea de órdenes de la API de control (las shells de la app lo tienen en el PATH).
+mkdir -p "$APP/Contents/Resources/bin"
+cp "target/$PROFILE/rt" "$APP/Contents/Resources/bin/rt"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
