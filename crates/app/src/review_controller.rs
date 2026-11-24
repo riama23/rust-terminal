@@ -3,6 +3,7 @@
 //! El diff se calcula en un hilo (un `git diff` grande no debe congelar la
 //! interfaz) y llega al hilo principal con el selector `reviewReady`.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
@@ -21,7 +22,8 @@ use crate::agent::diff::DiffFile;
 use crate::agent::git;
 use crate::agent::model::Status;
 use crate::agent::review::{self, Review, ReviewError, Side};
-use crate::review_ui::{FileRow, ReviewActions, ReviewRoot};
+use crate::review_tree::{self, TreeFile};
+use crate::review_ui::{ReviewActions, ReviewRoot};
 use crate::view::TerminalView;
 
 pub struct ReviewState {
@@ -31,6 +33,8 @@ pub struct ReviewState {
     title: String,
     review: Review,
     selected: usize,
+    /// Carpetas plegadas del árbol de archivos (claves de `review_tree`).
+    collapsed: HashSet<String>,
     branch: Option<String>,
     base: Option<String>,
 }
@@ -408,6 +412,7 @@ impl TerminalView {
                     title,
                     review,
                     selected,
+                    collapsed: HashSet::new(),
                     branch: loaded.branch,
                     base: loaded.base,
                 });
@@ -437,6 +442,7 @@ impl TerminalView {
                 send: sel!(reviewSend:),
                 pr: sel!(reviewOpenPR:),
                 discard: sel!(reviewDiscard:),
+                toggle_list: sel!(reviewToggleList:),
             },
         );
         let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1180.0, 740.0));
@@ -469,6 +475,12 @@ impl TerminalView {
             }
         });
         let w = weak.clone();
+        root.ivars_pub().list.set_on_toggle(move |dir| {
+            if let Some(v) = w.load() {
+                v.review_toggle_dir(dir);
+            }
+        });
+        let w = weak.clone();
         root.ivars_pub().diff.set_on_add(move |side, line| {
             if let Some(v) = w.load() {
                 v.review_add(side, line);
@@ -495,19 +507,18 @@ impl TerminalView {
         let slot = self.agents().review.borrow();
         let Some(state) = slot.as_ref() else { return };
         let r = &state.review;
-        let files: Vec<FileRow> = r
+        let files: Vec<TreeFile> = r
             .files
             .iter()
-            .enumerate()
-            .map(|(i, f)| FileRow {
-                path: f.path.clone(),
+            .map(|f| TreeFile {
+                path: &f.path,
                 status: f.status,
                 comments: r.count_for(&f.path),
-                selected: i == state.selected,
             })
             .collect();
         let iv = state.root.ivars_pub();
-        iv.list.set_rows(files);
+        iv.list
+            .set_rows(review_tree::build(&files, &state.collapsed, state.selected));
         let rows = r
             .files
             .get(state.selected)
@@ -544,6 +555,25 @@ impl TerminalView {
             && index < state.review.files.len()
         {
             state.selected = index;
+            // Un archivo seleccionado nunca queda dentro de una carpeta plegada.
+            let path = state.review.files[index].path.clone();
+            review_tree::reveal(&mut state.collapsed, &path);
+        }
+        self.review_render();
+    }
+
+    /// Clic en una carpeta del árbol: la pliega o la despliega.
+    pub fn review_toggle_dir(&self, dir: String) {
+        if let Some(state) = self.agents().review.borrow_mut().as_mut() {
+            review_tree::toggle(&mut state.collapsed, &dir);
+        }
+        self.review_render();
+    }
+
+    /// Botón de la cabecera: oculta o muestra la lista de archivos.
+    pub fn review_toggle_list(&self) {
+        if let Some(state) = self.agents().review.borrow().as_ref() {
+            state.root.set_list_hidden(!state.root.list_hidden());
         }
         self.review_render();
     }

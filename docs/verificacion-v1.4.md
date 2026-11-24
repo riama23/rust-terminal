@@ -52,3 +52,16 @@ Lista de comprobación de la v1.4: Review (diff y comentarios en lote), inspecto
 - [ ] «Descartar worktree…» solo funciona con worktrees de `.claude/worktrees`, no con el proyecto. Confirma, enseña cuántos archivos sin commit se pierden y **conserva la rama**. No deja descartar con el agente trabajando.
 - Sin comprobar a mano: los clics y el flujo completo contra GitHub.
 
+## Árbol de archivos y panel ocultable (issue #12)
+
+La lista de archivos de Review es ahora un árbol de carpetas (`review_tree`, lógica pura con tests) y se puede ocultar.
+
+- [ ] Las carpetas salen primero, con sus archivos sangrados debajo; una cadena de carpetas con un solo hijo (`crates/app/src`) ocupa una sola fila.
+- [ ] Clic en una carpeta la pliega (▸) o la despliega (▾). Una carpeta plegada sigue mostrando la suma de comentarios de lo que contiene.
+- [ ] Clic en un archivo lo selecciona y enseña su diff; el contador de comentarios del archivo y el de su carpeta coinciden.
+- [ ] El botón ◧ de la cabecera oculta la lista y el diff ocupa todo el ancho; al volver a pulsarlo reaparece con la selección y el plegado intactos.
+- [ ] Redimensionar la ventana (mínimo 760×420) con la lista visible y oculta no deja huecos ni recorta el diff.
+- [ ] Los nombres largos se recortan con «…» y no se salen de la fila ni tapan la píldora de comentarios.
+- [ ] Se ve bien con los temas Dusk y Paper (todo sale de `palette::tok`).
+- Pendiente: un atajo de teclado para ocultar la lista y la navegación con ↑/↓. Exigen una entrada de menú y encaminar la acción a una ventana que no es la de la terminal.
+
