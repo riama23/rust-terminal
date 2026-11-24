@@ -99,6 +99,8 @@ pub struct ViewIvars {
     pub(crate) selected_block: Cell<Option<(PaneId, u64)>>,
     /// Agentes de Claude Code de esta ventana (sidebar y attention bar).
     pub(crate) agents: crate::agent_controller::AgentController,
+    /// La paleta de comandos (⌘⇧P).
+    pub(crate) palette: crate::palette_controller::PaletteController,
 }
 
 define_class!(
@@ -371,6 +373,12 @@ define_class!(
             self.spin();
         }
 
+        /// ⌘⇧P: la paleta de comandos.
+        #[unsafe(method(commandPalette:))]
+        fn command_palette_action(&self, _sender: Option<&AnyObject>) {
+            self.toggle_palette();
+        }
+
         #[unsafe(method(toggleZoom:))]
         fn toggle_zoom_action(&self, _sender: Option<&AnyObject>) {
             self.with_workspace_mut(|w| w.tab_mut().toggle_zoom());
@@ -626,6 +634,7 @@ impl TerminalView {
             spinner_running: Cell::new(false),
             selected_block: Cell::new(None),
             agents: Default::default(),
+            palette: Default::default(),
         });
         // SAFETY: `initWithFrame:` de NSView.
         unsafe { msg_send![super(this), initWithFrame: frame] }
@@ -686,6 +695,15 @@ impl TerminalView {
 
     pub(crate) fn agents(&self) -> &crate::agent_controller::AgentController {
         &self.ivars().agents
+    }
+
+    pub(crate) fn ivars_palette(&self) -> &crate::palette_controller::PaletteController {
+        &self.ivars().palette
+    }
+
+    /// Las sesiones de todos los paneles.
+    pub(crate) fn all_sessions(&self) -> Vec<Arc<Session>> {
+        self.ivars().sessions.borrow().values().cloned().collect()
     }
 
     pub(crate) fn waker_arc(&self) -> Option<Arc<Waker>> {

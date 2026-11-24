@@ -1,6 +1,6 @@
 # Verificación manual: v1.5 (polish de splits)
 
-Hecho: atenuado, cabecera por panel, zoom, resize por teclado, spinner de pestañas y la primera capa de bloques visuales (tinte y barra de acciones). Pendiente: cabecera inline por bloque, colapsar, «relanzar solo fallidos», vuelta automática a Classic y la paleta de comandos.
+Hecho: atenuado, cabecera por panel, zoom, resize por teclado, spinner de pestañas y la primera capa de bloques visuales (tinte y barra de acciones). Pendiente: cabecera inline por bloque, colapsar, «relanzar solo fallidos» y vuelta automática a Classic.
 
 - [ ] Con 2 o más paneles en la pestaña, cada uno lleva una **cabecera de 30 pt** con su título; el panel con el foco tiene la línea de acento. Con un solo panel (o con zoom) no hay cabecera. Se apaga con `window.pane_headers = false`.
 - [ ] Los paneles **sin foco se ven al 55 %**; el cursor de esos paneles es hueco. Se apaga con `window.dim_unfocused = false`. Con un solo panel no se atenúa.
@@ -23,4 +23,17 @@ No hay cabecera dentro de la rejilla (haría falta reescribir scroll, selección
 - [ ] `blocks.visual = false` quita tinte y barra (quedan las marcas del margen).
 - La barra no sustituye a la de permisos ni a la de terminado de un agente: ellas mandan.
 - Sin comprobar a mano: los clics en los botones de la barra (por teclado y menú sí).
+
+## Paleta de comandos (⌘⇧P)
+
+Ámbitos: **Acciones** (las del menú) e **Historial** (comandos de los bloques de esta sesión y el final de `~/.zsh_history`). Los *flujos* del spec no existen todavía.
+
+- [ ] **⌘⇧P** abre un diálogo de 640 pt centrado sobre un velo; volver a pulsarlo, **Esc** o un clic fuera lo cierra, y el teclado vuelve a la terminal.
+- [ ] Escribir filtra con búsqueda difusa (sin distinguir mayúsculas ni acentos: `pestana` encuentra «Nueva pestaña»). **↑ ↓** mueven la selección, **⇥** recorre *Todo → Acciones → Historial*.
+- [ ] Las filas llevan `ACT` o `CMD`, el título y una segunda línea (atajo; o directorio · antigüedad · ✓/✕ código).
+- [ ] **↵** ejecuta: una acción hace lo mismo que su menú; un comando de historial se escribe en la shell con Intro. **⌘↵** lo inserta sin ejecutar.
+- [ ] Sin coincidencias aparece «Ejecutar «texto» como comando».
+- [ ] El ranking sube lo que más y más recientemente usas (frecuencia). Se guarda en `~/.config/rust-terminal/palette-frecency.tsv` (0600, máx. 500 entradas, con los comandos que has lanzado desde la paleta); borra el archivo para olvidarlo.
+- [ ] **Seguridad:** no escribe en un panel que sea un agente ni con un programa en marcha (avisa), y rechaza comandos con saltos de línea o caracteres de control.
+- Comprobado con teclas sintéticas entregadas a `keyDown:` (solo debug: `RT_OPEN_PALETTE` y `RT_PALETTE_KEYS`): filtrar, historial de zsh y ejecutar un comando desde el estado vacío. Sin comprobar a mano: ⌘⇧P desde el teclado real, el clic en filas y ⌘↵.
 

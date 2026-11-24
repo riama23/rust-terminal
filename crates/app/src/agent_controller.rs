@@ -221,7 +221,7 @@ pub fn sidebar_rows(hub: &Hub, focused: PaneId) -> Vec<SidebarRow> {
 }
 
 impl TerminalView {
-    fn container(&self) -> Option<Retained<ContainerView>> {
+    pub(crate) fn container(&self) -> Option<Retained<ContainerView>> {
         // SAFETY: `superview` solo lee el árbol de vistas, desde el hilo principal.
         unsafe { self.superview() }?
             .downcast::<ContainerView>()
