@@ -45,6 +45,28 @@ impl Hub {
         model::sort(&mut self.sessions);
     }
 
+    /// Un `claude` lanzado a mano: «En marcha» hasta que haya actividad.
+    /// `limited`: solo se sabe por el proceso, sin hooks.
+    pub fn add_running(&mut self, key: AgentKey, title: String, pane: PaneId, limited: bool) {
+        self.add(key.clone(), title, pane);
+        if let Some(s) = self.sessions.iter_mut().find(|s| s.key == key) {
+            s.status = model::Status::Running;
+            s.limited = limited;
+        }
+        model::sort(&mut self.sessions);
+    }
+
+    /// Cambia el título de una sesión (la adoptada toma el del primer prompt).
+    pub fn set_title(&mut self, key: &str, title: String) -> bool {
+        match self.sessions.iter_mut().find(|s| s.key == key) {
+            Some(s) if s.title != title => {
+                s.title = title;
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn remove(&mut self, key: &str) {
         self.panes.remove(key);
         self.sessions.retain(|s| s.key != key);

@@ -746,7 +746,13 @@ impl TerminalView {
             _ => {
                 let shell = config.shell();
                 if config.shell_integration {
-                    env.extend(crate::shell::integration_env(&shell));
+                    let zsh = crate::shell::integration_env(&shell);
+                    // Los hooks de la app para un `claude` escrito a mano
+                    // (solo los usa la función de zsh).
+                    if config.track_manual_claude && !zsh.is_empty() {
+                        env.extend(self.manual_claude_env(id, cwd.as_deref()));
+                    }
+                    env.extend(zsh);
                 }
                 (shell, config.shell_args.clone())
             }
@@ -1568,6 +1574,9 @@ impl TerminalView {
                             Some(code) => format!("Comando fallido (código {code})"),
                         };
                         notify::notify(&title, &format!("{command} · {seconds} s"));
+                    }
+                    AppEvent::Claude(running) if config.track_manual_claude => {
+                        self.claude_foreground(s.id, running);
                     }
                     AppEvent::Bell if away && config.bell_dock_bounce => {
                         NSApplication::sharedApplication(self.mtm())

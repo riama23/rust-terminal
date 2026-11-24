@@ -16,6 +16,9 @@ pub enum Status {
         tool: String,
     },
     Working,
+    /// `claude` está en marcha en el panel, pero la app no recibe sus hooks
+    /// (lanzado a mano sin la función de zsh): solo se sabe que corre.
+    Running,
     Error,
     /// Propuso un plan y espera aprobación.
     PlanReady,
@@ -30,7 +33,7 @@ impl Status {
     fn rank(&self) -> u8 {
         match self {
             Status::NeedsYou { .. } => 0,
-            Status::Working => 1,
+            Status::Working | Status::Running => 1,
             Status::Error => 2,
             Status::PlanReady => 3,
             Status::Done => 4,
@@ -44,6 +47,7 @@ impl Status {
             Status::NeedsYou { tool } if tool.is_empty() => "Necesita tu atención".into(),
             Status::NeedsYou { tool } => format!("Necesita tu atención · {tool}"),
             Status::Working => "Trabajando".into(),
+            Status::Running => "En marcha".into(),
             Status::Error => "Error".into(),
             Status::PlanReady => "Plan listo · esperando".into(),
             Status::Done => "Terminado".into(),
@@ -55,6 +59,7 @@ impl Status {
         match self {
             Status::NeedsYou { .. } => "!",
             Status::Working => "◐",
+            Status::Running => "●",
             Status::Error => "✕",
             Status::PlanReady => "☰",
             Status::Done => "✓",
@@ -140,6 +145,8 @@ pub struct AgentSession {
     pub todos: Vec<Todo>,
     /// Orden de creación, para desempatar.
     pub seq: u64,
+    /// Detectado solo por el proceso en primer plano: sin hooks, sin permisos.
+    pub limited: bool,
 }
 
 fn str_at<'a>(v: &'a Value, path: &[&str]) -> Option<&'a str> {
@@ -160,6 +167,7 @@ impl AgentSession {
             telemetry: Telemetry::default(),
             todos: Vec::new(),
             seq,
+            limited: false,
         }
     }
 
@@ -248,7 +256,8 @@ impl AgentSession {
             self.todos = parse_todos(input);
         }
         match event {
-            "SessionStart" | "PreToolUse" | "PostToolUse" | "TaskCreated" | "TaskCompleted"
+            "SessionStart" | "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "TaskCreated"
+            | "TaskCompleted"
                 if !blocked =>
             {
                 self.status = Status::Working;

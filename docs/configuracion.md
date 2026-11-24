@@ -102,6 +102,16 @@ Inyecta la integración con zsh (bloques de comandos). También se desactiva con
 - **Por defecto:** `true`
 - **Se aplica:** pestañas nuevas
 
+## `[agents]`
+
+### `track_manual_claude`
+
+Muestra en la sidebar los `claude` que lanzas a mano en un panel. Con zsh, una función `claude` le pasa los hooks de la app; con otras shells solo se ve que está en marcha.
+
+- **Tipo:** `true` o `false`
+- **Por defecto:** `true`
+- **Se aplica:** pestañas nuevas
+
 ## `[scrollback]`
 
 ### `lines`

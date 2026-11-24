@@ -202,6 +202,9 @@ pub fn can_send(status: &Status) -> Result<(), &'static str> {
         Status::NeedsYou { .. } | Status::PlanReady => {
             Err("El agente espera una respuesta. Contéstala primero: ese texto la contestaría.")
         }
+        Status::Running => {
+            Err("Este Claude se lanzó sin los hooks de la app: no se sabe si terminó su turno.")
+        }
         Status::Working => {
             Err("El agente está trabajando. Envía los comentarios cuando termine su turno.")
         }

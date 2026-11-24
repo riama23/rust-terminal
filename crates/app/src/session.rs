@@ -28,6 +28,8 @@ pub enum AppEvent {
         exit_code: Option<i32>,
         seconds: u64,
     },
+    /// Claude Code pasó a ser (o dejó de ser) el programa en primer plano.
+    Claude(bool),
 }
 
 pub struct Session {
@@ -248,17 +250,30 @@ fn start_reader(session: Arc<Session>, mut reader: PtyReader, mut child: Child, 
         .name(format!("pty-reader-{}", session.id))
         .spawn(move || {
             let mut buf = vec![0u8; 64 * 1024];
+            // Primer plano de la PTY: solo se mira el proceso si cambia el
+            // grupo, y solo se avisa si cambia que sea Claude Code.
+            let mut last_fg: Option<u32> = None;
+            let mut claude_fg = false;
             loop {
                 let n = match reader.read(&mut buf) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => n,
                 };
-                let (responses, title_changed, events) = {
+                let (responses, title_changed, mut events) = {
                     let mut term = session.term.lock().unwrap();
                     term.advance(&buf[..n]);
                     let events = session.collect_events(&mut term);
                     (term.take_responses(), term.take_title_changed(), events)
                 };
+                let fg = session.control.lock().unwrap().foreground_pgrp();
+                if fg != last_fg {
+                    last_fg = fg;
+                    let claude = fg.is_some_and(|p| p != session.pid && crate::proc::is_claude(p));
+                    if claude != claude_fg {
+                        claude_fg = claude;
+                        events.push(AppEvent::Claude(claude));
+                    }
+                }
                 if !events.is_empty() {
                     session.pending.lock().unwrap().extend(events);
                     waker.on_main_thread(sel!(sessionEvents));

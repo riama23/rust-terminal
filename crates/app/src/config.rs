@@ -138,6 +138,14 @@ pub const OPTIONS: &[OptionSpec] = &[
         description: "Inyecta la integración con zsh (bloques de comandos). También se desactiva con `RT_NO_SHELL_INTEGRATION=1`.",
     },
     OptionSpec {
+        section: "agents",
+        key: "track_manual_claude",
+        kind: Kind::Bool,
+        default: "true",
+        apply: Apply::NewTabs,
+        description: "Muestra en la sidebar los `claude` que lanzas a mano en un panel. Con zsh, una función `claude` le pasa los hooks de la app; con otras shells solo se ve que está en marcha.",
+    },
+    OptionSpec {
         section: "scrollback",
         key: "lines",
         kind: Kind::Int {
@@ -223,6 +231,7 @@ pub struct Config {
     pub shell_program: Option<String>,
     pub shell_args: Vec<String>,
     pub shell_integration: bool,
+    pub track_manual_claude: bool,
     pub scrollback_lines: usize,
     pub clipboard_write: bool,
     pub clipboard_read: ClipboardRead,
@@ -344,6 +353,7 @@ impl Config {
             }
             ("shell", "args", Value::StrList(a)) => self.shell_args = a,
             ("shell", "integration", Value::Bool(b)) => self.shell_integration = b,
+            ("agents", "track_manual_claude", Value::Bool(b)) => self.track_manual_claude = b,
             ("scrollback", "lines", Value::Int(i)) => self.scrollback_lines = i as usize,
             ("clipboard", "write", Value::Bool(b)) => self.clipboard_write = b,
             ("clipboard", "read", Value::Str(s)) => {
@@ -451,6 +461,7 @@ impl Default for Config {
             shell_program: None,
             shell_args: Vec::new(),
             shell_integration: false,
+            track_manual_claude: false,
             scrollback_lines: 0,
             clipboard_write: false,
             clipboard_read: ClipboardRead::Deny,

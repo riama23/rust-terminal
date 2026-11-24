@@ -115,6 +115,15 @@ precmd_functions+=(fake_theme)
 
     impl Session {
         fn start(zshrc: &str, cols: u16, rows: u16) -> Session {
+            Session::start_with_env(zshrc, cols, rows, &[])
+        }
+
+        fn start_with_env(
+            zshrc: &str,
+            cols: u16,
+            rows: u16,
+            extra: &[(String, String)],
+        ) -> Session {
             let home = tempdir::Dir::new("home");
             let integ = tempdir::Dir::new("integ");
             std::fs::write(home.path().join(".zshrc"), zshrc).unwrap();
@@ -124,6 +133,7 @@ precmd_functions+=(fake_theme)
                 ("ZDOTDIR".to_owned(), integ.path().display().to_string()),
             ];
             env.push(("LANG".to_owned(), "en_US.UTF-8".to_owned()));
+            env.extend(extra.iter().cloned());
             let pty = Pty::spawn("/bin/zsh", &["-i"], env, cols, rows).unwrap();
             let (mut reader, writer, _child) = pty.split().unwrap();
             let (tx, rx) = mpsc::channel();
@@ -301,5 +311,89 @@ precmd_functions+=(fake_theme)
                 assert!(text.contains("antes"), "pantalla:\n{text}");
             }
         }
+    }
+
+    /// Un `claude` falso que imprime sus argumentos, y su PATH.
+    fn fake_claude() -> (tempdir::Dir, Vec<(String, String)>) {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = tempdir::Dir::new("bin");
+        let script = bin.path().join("claude");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf 'ARGS<'; printf '[%s]' \"$@\"; printf '>\\n'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let settings = bin.path().join("settings.json");
+        std::fs::write(&settings, "{}").unwrap();
+        let env = vec![
+            (
+                "PATH".to_owned(),
+                format!("{}:/usr/bin:/bin", bin.path().display()),
+            ),
+            (
+                "RT_CLAUDE_SETTINGS".to_owned(),
+                settings.display().to_string(),
+            ),
+        ];
+        (bin, env)
+    }
+
+    fn claude_args(s: &mut Session, cmd: &str) -> String {
+        s.run(cmd);
+        let text = s.term.snapshot_text();
+        text.lines()
+            .rev()
+            .find(|l| l.starts_with("ARGS<"))
+            .unwrap_or_else(|| panic!("sin salida de claude; pantalla:\n{text}"))
+            .to_owned()
+    }
+
+    #[test]
+    fn claude_function_adds_settings_only_when_interactive() {
+        let (bin, env) = fake_claude();
+        let settings = bin.path().join("settings.json").display().to_string();
+        let mut s = Session::start_with_env(ZSHRC, 200, 30, &env);
+        s.wait_prompt(1);
+        assert_eq!(
+            claude_args(&mut s, "claude hola"),
+            format!("ARGS<[--settings][{settings}][hola]>")
+        );
+        for cmd in [
+            "claude mcp list",
+            "claude -p hola",
+            "claude --bg x",
+            "claude --settings /tmp/x.json",
+            "claude --version",
+        ] {
+            let out = claude_args(&mut s, cmd);
+            assert!(
+                !out.contains(&settings),
+                "`{cmd}` no debe llevar los hooks de la app: {out}"
+            );
+        }
+    }
+
+    #[test]
+    fn claude_function_does_not_override_the_users() {
+        let (_bin, env) = fake_claude();
+        let zshrc = format!("{ZSHRC}\nclaude() {{ echo mio }}\n");
+        let mut s = Session::start_with_env(&zshrc, 80, 20, &env);
+        s.wait_prompt(1);
+        s.run("claude");
+        assert!(s.term.snapshot_text().contains("mio"));
+    }
+
+    #[test]
+    fn claude_is_plain_without_settings_file() {
+        let (bin, mut env) = fake_claude();
+        env.retain(|(k, _)| k != "RT_CLAUDE_SETTINGS");
+        env.push((
+            "RT_CLAUDE_SETTINGS".to_owned(),
+            bin.path().join("no-existe.json").display().to_string(),
+        ));
+        let mut s = Session::start_with_env(ZSHRC, 100, 20, &env);
+        s.wait_prompt(1);
+        assert_eq!(claude_args(&mut s, "claude hola"), "ARGS<[hola]>");
     }
 }
