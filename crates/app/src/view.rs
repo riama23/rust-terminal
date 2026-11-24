@@ -382,6 +382,15 @@ define_class!(
         }
 
         /// ⌘⇧↵: el panel con el foco ocupa toda la pestaña.
+        /// Vuelve a mirar el primer plano de todos los paneles.
+        #[unsafe(method(recheckForeground))]
+        fn recheck_foreground(&self) {
+            for s in self.all_sessions() {
+                s.recheck_foreground();
+            }
+            self.process_events();
+        }
+
         /// Siguiente fotograma del spinner de las pestañas ocupadas.
         #[unsafe(method(spinnerTick))]
         fn spinner_tick(&self) {
@@ -1049,6 +1058,17 @@ impl TerminalView {
         }
     }
 
+    /// Un comando acaba de arrancar: se vuelve a mirar el primer plano un poco
+    /// después, por si es un programa que no escribe nada (`ssh` conectando).
+    fn schedule_foreground_rechecks(&self) {
+        for delay in [0.4f64, 2.0, 5.0] {
+            // SAFETY: `recheckForeground` existe en esta clase y no lleva argumentos.
+            let _: () = unsafe {
+                msg_send![self, performSelector: sel!(recheckForeground), withObject: None::<&AnyObject>, afterDelay: delay]
+            };
+        }
+    }
+
     fn any_tab_busy(&self) -> bool {
         self.ivars()
             .sessions
@@ -1190,6 +1210,7 @@ impl TerminalView {
         let plus_w = bar_h;
         let tab_w = ((w - plus_w) / n).min(cw * 28.0).floor();
         let close_w = (cw * 2.5).round();
+        let prod_hosts = self.ivars().config.borrow().production_hosts.clone();
         let sessions = self.ivars().sessions.borrow();
         let tabs = workspace
             .tabs
@@ -1205,8 +1226,15 @@ impl TerminalView {
                     .panes()
                     .iter()
                     .any(|p| sessions.get(p).is_some_and(|s| s.busy.load(SeqCst)));
+                let prod = tab.panes().iter().any(|p| {
+                    sessions
+                        .get(p)
+                        .and_then(|s| s.ssh_host())
+                        .is_some_and(|h| crate::proc::host_matches(&h, &prod_hosts))
+                });
                 TabItem {
                     busy,
+                    prod,
                     title,
                     rect: [x as f32, 0.0, tab_w as f32, bar_h as f32],
                     close: [
@@ -1316,6 +1344,18 @@ impl TerminalView {
             s.visible.store(visible, SeqCst);
         }
         let title = sessions.get(&focused).map(|s| s.title());
+        let prod_hosts = self.ivars().config.borrow().production_hosts.clone();
+        let header_prod: std::collections::HashSet<PaneId> = g
+            .headers
+            .iter()
+            .filter(|(id, _)| {
+                sessions
+                    .get(id)
+                    .and_then(|s| s.ssh_host())
+                    .is_some_and(|h| crate::proc::host_matches(&h, &prod_hosts))
+            })
+            .map(|(id, _)| *id)
+            .collect();
         let header_titles: std::collections::HashMap<PaneId, String> = g
             .headers
             .iter()
@@ -1359,12 +1399,23 @@ impl TerminalView {
                     rect: [r.x as f32, r.y as f32, r.w as f32, r.h as f32],
                     title: header_titles.get(id).cloned().unwrap_or_default(),
                     focused: *id == focused,
+                    prod: header_prod.contains(id),
                 })
                 .collect(),
             tab_bar: g.tab_bar.clone(),
             theme: self.effective_theme(),
             font: self.font_spec(),
         });
+        // Solo en depuración: `RT_DUMP_TABS=archivo` vuelca el estado de las pestañas.
+        #[cfg(debug_assertions)]
+        if let (Some(path), Some(bar)) = (std::env::var_os("RT_DUMP_TABS"), g.tab_bar.as_ref()) {
+            let text: String = bar
+                .tabs
+                .iter()
+                .map(|t| format!("{}|busy={}|prod={}\n", t.title, t.busy, t.prod))
+                .collect();
+            let _ = std::fs::write(path, text);
+        }
         *self.ivars().geometry.borrow_mut() = g;
         if let (Some(title), Some(window)) = (title, self.window()) {
             window.setTitle(&NSString::from_str(&title));
@@ -1933,7 +1984,14 @@ impl TerminalView {
                         };
                         notify::notify(&title, &format!("{command} · {seconds} s"));
                     }
-                    AppEvent::Busy(_) => self.busy_changed(),
+                    AppEvent::Busy(running) => {
+                        if running {
+                            self.schedule_foreground_rechecks();
+                        }
+                        self.busy_changed()
+                    }
+                    // Otro host en primer plano: el distintivo PROD de la pestaña.
+                    AppEvent::Ssh(_) => self.update_layout(),
                     AppEvent::Claude(running) if config.track_manual_claude => {
                         self.claude_foreground(s.id, running);
                     }

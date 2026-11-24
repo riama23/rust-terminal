@@ -203,6 +203,14 @@ pub const OPTIONS: &[OptionSpec] = &[
         description: "Orden para «Abrir en el editor» (⌘O) con `{path}`, `{line}` y `{col}`, por ejemplo `code -g {path}:{line}:{col}`. Vacío: `open -t` (el editor de texto por defecto, sin línea).",
     },
     OptionSpec {
+        section: "ssh",
+        key: "production_hosts",
+        kind: Kind::StrList,
+        default: "[]",
+        apply: Apply::Live,
+        description: "Hosts de producción: una pestaña conectada por `ssh` a uno de ellos lleva el distintivo PROD. Patrones con `*` y `?`, sin distinguir mayúsculas (por ejemplo `prod-*`, `*.prod.example.com`). Se compara con el destino escrito en el `ssh`, sin el usuario.",
+    },
+    OptionSpec {
         section: "scrollback",
         key: "lines",
         kind: Kind::Int {
@@ -402,6 +410,7 @@ pub struct Config {
     /// Atajos por acción (`[keybindings]`).
     pub keybindings: std::collections::HashMap<String, String>,
     pub appearance: Appearance,
+    pub production_hosts: Vec<String>,
     /// Claves de `[colors]` que el usuario puso en el archivo: no las pisa el tema.
     pub colors_set: Vec<String>,
     pub scrollback_lines: usize,
@@ -635,6 +644,7 @@ impl Config {
                 self.long_command_seconds = i as u64
             }
             ("bell", "dock_bounce", Value::Bool(b)) => self.bell_dock_bounce = b,
+            ("ssh", "production_hosts", Value::StrList(l)) => self.production_hosts = l,
             ("appearance", "theme", Value::Str(s)) => {
                 self.appearance = match s.as_str() {
                     "paper" => Appearance::Paper,
@@ -793,6 +803,7 @@ impl Default for Config {
             block_editor: String::new(),
             keybindings: Default::default(),
             appearance: Appearance::Dusk,
+            production_hosts: Vec::new(),
             colors_set: Vec::new(),
             scrollback_lines: 0,
             clipboard_write: false,

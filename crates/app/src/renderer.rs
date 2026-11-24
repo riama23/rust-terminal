@@ -261,6 +261,7 @@ pub struct PaneHeader {
     pub rect: [f32; 4],
     pub title: String,
     pub focused: bool,
+    pub prod: bool,
 }
 
 /// Opacidad de un panel atenuado (spec: 55 %).
@@ -275,6 +276,8 @@ pub struct TabItem {
     pub active: bool,
     /// Un programa corre en la pestaña: lleva spinner.
     pub busy: bool,
+    /// Conectada por `ssh` a un host de producción: lleva el distintivo PROD.
+    pub prod: bool,
 }
 
 /// La barra de pestañas, ya maquetada en píxeles.
@@ -567,6 +570,31 @@ impl Renderer {
         }
     }
 
+    /// El distintivo PROD (naranja, con fondo tintado) con su borde derecho en
+    /// `right`; devuelve su ancho.
+    fn push_prod_badge(&mut self, right: f32, y: f32, h: f32, glyphs: &mut Vec<Quad>) -> f32 {
+        let m = self.fonts.metrics;
+        let (cw, ch) = (m.cell_w as f32, m.cell_h as f32);
+        let w = cw * 5.0;
+        let x = right - w;
+        let (bh, by) = (
+            (ch * 1.1).min(h - 4.0),
+            y + (h - (ch * 1.1).min(h - 4.0)) / 2.0,
+        );
+        let color = crate::palette::tok::prod();
+        self.quads
+            .push(fill([x, by, w, bh], palette::to_rgba(color, 0.18)));
+        self.push_text(
+            "PROD",
+            x + cw * 0.5,
+            y + ((h - ch) / 2.0).round(),
+            w,
+            palette::to_rgba(color, 1.0),
+            glyphs,
+        );
+        w + cw * 0.5
+    }
+
     fn build_pane_header(&mut self, header: &PaneHeader, glyphs: &mut Vec<Quad>) {
         let m = self.fonts.metrics;
         let (cw, ch) = (m.cell_w as f32, m.cell_h as f32);
@@ -588,11 +616,16 @@ impl Renderer {
         } else {
             palette::tab_inactive_fg()
         };
+        let badge = if header.prod {
+            self.push_prod_badge(x + w - cw, y, h, glyphs)
+        } else {
+            0.0
+        };
         self.push_text(
             &header.title,
             x + cw,
             y + ((h - ch) / 2.0).round(),
-            w - cw * 2.0,
+            w - cw * 2.0 - badge,
             palette::to_rgba(fg, 1.0),
             glyphs,
         );
@@ -638,7 +671,11 @@ impl Renderer {
                 );
                 text_x += cw * 2.0;
             }
-            let max_w = tab.close[0] - text_x - cw * 0.5;
+            let mut right = tab.close[0] - cw * 0.5;
+            if tab.prod {
+                right -= self.push_prod_badge(right, y, h, glyphs);
+            }
+            let max_w = right - text_x;
             self.push_text(
                 &tab.title,
                 text_x,
@@ -1180,6 +1217,64 @@ mod tests {
     }
 
     #[test]
+    fn prod_tabs_and_headers_get_the_orange_badge() {
+        let device = create_device();
+        let mut r = Renderer::new(
+            device,
+            MTLPixelFormat::BGRA8Unorm,
+            &test_font(),
+            theme(),
+            2.0,
+        );
+        let tab = |prod| TabItem {
+            title: "web".to_owned(),
+            rect: [0.0, 0.0, 600.0, 60.0],
+            close: [540.0, 0.0, 60.0, 60.0],
+            active: true,
+            busy: false,
+            prod,
+        };
+        let frame = |prod, headers| Frame {
+            layout: Layout {
+                scale: 2.0,
+                width_px: 600,
+                height_px: 200,
+            },
+            panes: Vec::new(),
+            dividers: Vec::new(),
+            headers,
+            tab_bar: Some(TabBar {
+                rect: [0.0, 0.0, 600.0, 60.0],
+                tabs: vec![tab(prod)],
+                plus: [600.0, 0.0, 60.0, 60.0],
+                spinner_phase: 0,
+            }),
+        };
+        // El tinte del distintivo: el color `prod` al 18 %.
+        let tint = |r: &Renderer| {
+            let c = crate::palette::tok::prod();
+            r.quads.iter().any(|q| {
+                q.kind == KIND_FILL
+                    && (q.color[3] - 0.18).abs() < 1e-6
+                    && (q.color[0] - f32::from(c[0]) / 255.0).abs() < 1e-6
+            })
+        };
+        r.build_quads(&frame(false, Vec::new()));
+        assert!(!tint(&r), "sin PROD no hay distintivo");
+        r.build_quads(&frame(true, Vec::new()));
+        assert!(tint(&r), "la pestaña PROD lleva el distintivo");
+        // Y también la cabecera de un panel PROD.
+        let header = PaneHeader {
+            rect: [0.0, 100.0, 600.0, 60.0],
+            title: "db".to_owned(),
+            focused: true,
+            prod: true,
+        };
+        r.build_quads(&frame(false, vec![header]));
+        assert!(tint(&r), "la cabecera PROD lleva el distintivo");
+    }
+
+    #[test]
     fn selection_and_block_marks() {
         let mut term = Term::new(4, 2);
         term.advance(b"\x1b[?25l");
@@ -1369,6 +1464,7 @@ mod tests {
                 close: [x + tab_w - close_w, 0.0, close_w, bar_h],
                 active,
                 busy: false,
+                prod: false,
             }
         };
         let frame = Frame {

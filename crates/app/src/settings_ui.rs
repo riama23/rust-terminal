@@ -27,7 +27,14 @@ const PAGES_TOP: f64 = 70.0;
 pub const PAGES: &[(&str, &[&str])] = &[
     (
         "General",
-        &["shell", "scrollback", "clipboard", "notifications", "bell"],
+        &[
+            "shell",
+            "ssh",
+            "scrollback",
+            "clipboard",
+            "notifications",
+            "bell",
+        ],
     ),
     ("Apariencia", &["appearance", "font", "colors", "window"]),
     ("Teclado", &["keybindings"]),

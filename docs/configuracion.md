@@ -156,6 +156,16 @@ Orden para «Abrir en el editor» (⌘O) con `{path}`, `{line}` y `{col}`, por e
 - **Por defecto:** `""`
 - **Se aplica:** en vivo
 
+## `[ssh]`
+
+### `production_hosts`
+
+Hosts de producción: una pestaña conectada por `ssh` a uno de ellos lleva el distintivo PROD. Patrones con `*` y `?`, sin distinguir mayúsculas (por ejemplo `prod-*`, `*.prod.example.com`). Se compara con el destino escrito en el `ssh`, sin el usuario.
+
+- **Tipo:** una lista de textos
+- **Por defecto:** `[]`
+- **Se aplica:** en vivo
+
 ## `[scrollback]`
 
 ### `lines`
