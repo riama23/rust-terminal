@@ -215,6 +215,22 @@ pub fn command_args(spec: &LaunchSpec, settings_path: &Path) -> Result<Vec<Strin
     Ok(args)
 }
 
+/// La shell con la que se lanza `claude` (`-l -i -c 'exec claude "$@"'`): la del
+/// usuario si es zsh o bash, que entienden esa sintaxis; con otra (fish, nu…)
+/// `/bin/zsh`, que viene con macOS. Así el agente arranca con el PATH del
+/// usuario sin depender de que su shell hable POSIX.
+pub fn agent_shell(user_shell: &str) -> String {
+    let name = Path::new(user_shell)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    if matches!(name, "zsh" | "bash") && Path::new(user_shell).is_absolute() {
+        user_shell.to_owned()
+    } else {
+        "/bin/zsh".to_owned()
+    }
+}
+
 /// Cita un argumento para `sh` con comillas simples.
 pub fn sh_quote(s: &str) -> String {
     if !s.is_empty()
@@ -834,5 +850,22 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(vacia.to_spec().validate(), Err(SpecError::EmptyTask));
+    }
+
+    #[test]
+    fn la_shell_del_agente_es_zsh_o_bash_y_si_no_zsh_del_sistema() {
+        assert_eq!(agent_shell("/bin/zsh"), "/bin/zsh");
+        assert_eq!(
+            agent_shell("/opt/homebrew/bin/bash"),
+            "/opt/homebrew/bin/bash"
+        );
+        assert_eq!(agent_shell("/opt/homebrew/bin/fish"), "/bin/zsh");
+        assert_eq!(agent_shell("/usr/local/bin/nu"), "/bin/zsh");
+        assert_eq!(
+            agent_shell("zsh"),
+            "/bin/zsh",
+            "una ruta relativa no se fía"
+        );
+        assert_eq!(agent_shell(""), "/bin/zsh");
     }
 }

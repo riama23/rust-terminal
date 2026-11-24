@@ -35,10 +35,17 @@ echo "→ Compilando (la primera vez tarda unos minutos)…"
 APP="$(scripts/bundle.sh release | tail -1)"
 NAME="$(basename "$APP")"
 
-# RT_INSTALL_DIR permite instalar en otro sitio (útil para probar el script).
-DEST="${RT_INSTALL_DIR:-/Applications}"
-[[ -w "$DEST" ]] || DEST="$HOME/Applications"
-mkdir -p "$DEST"
+# RT_INSTALL_DIR permite instalar en otro sitio (útil para probar el script):
+# se crea si hace falta y se respeta siempre, sin caer a otra carpeta.
+if [[ -n "${RT_INSTALL_DIR:-}" ]]; then
+    DEST="$RT_INSTALL_DIR"
+    mkdir -p "$DEST" || fail "No se pudo crear $DEST."
+    [[ -w "$DEST" ]] || fail "No se puede escribir en $DEST."
+else
+    DEST="/Applications"
+    [[ -w "$DEST" ]] || DEST="$HOME/Applications"
+    mkdir -p "$DEST"
+fi
 rm -rf "${DEST:?}/$NAME"
 cp -R "$APP" "$DEST/"
 

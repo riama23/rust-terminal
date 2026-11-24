@@ -214,7 +214,7 @@ impl TerminalView {
         // Por la shell de login para tener el PATH del usuario (claude suele
         // estar en ~/.local/bin).
         let mut command = vec![
-            self.user_shell(),
+            launch::agent_shell(&self.user_shell()),
             "-l".to_owned(),
             "-i".to_owned(),
             "-c".to_owned(),
