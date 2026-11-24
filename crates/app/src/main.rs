@@ -8,6 +8,7 @@ mod agent_ui;
 mod block_controller;
 mod block_ui;
 mod blocks;
+mod command_palette;
 mod config;
 mod container;
 mod font;
@@ -16,6 +17,8 @@ mod icon;
 mod input;
 mod notify;
 mod palette;
+mod palette_controller;
+mod palette_ui;
 mod proc;
 mod renderer;
 mod report;
@@ -185,6 +188,7 @@ fn build_menu(app: &NSApplication, mtm: MainThreadMarker) {
         mtm,
         "Shell",
         vec![
+            menu_item(mtm, "Paleta de comandos…", sel!(commandPalette:), "P"),
             menu_item(mtm, "Nuevo agente…", sel!(newAgent:), "n"),
             menu_item(mtm, "Revisar cambios del agente", sel!(reviewChanges:), "R"),
             menu_item(mtm, "Nueva pestaña", sel!(newTab:), "t"),
@@ -457,6 +461,14 @@ fn open_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
     // Ayuda de verificación: `RT_OPEN_SHEET=1` abre el formulario de nuevo agente.
     if std::env::var_os("RT_OPEN_SHEET").is_some() {
         view.new_agent_sheet();
+    }
+    // Ayuda de verificación: `RT_OPEN_PALETTE=consulta` abre la paleta con esa consulta.
+    if let Some(query) = std::env::var_os("RT_OPEN_PALETTE") {
+        view.open_palette(&query.to_string_lossy());
+        #[cfg(debug_assertions)]
+        if let Some(keys) = std::env::var_os("RT_PALETTE_KEYS") {
+            view.debug_palette_keys(&keys.to_string_lossy());
+        }
     }
     // Ayuda de verificación: `RT_AGENT_TEST="tarea"` lanza un agente al arrancar,
     // en `RT_AGENT_DIR` (o la carpeta actual), sin pasar por el formulario.
