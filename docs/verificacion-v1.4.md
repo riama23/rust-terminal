@@ -44,3 +44,11 @@ Lista de comprobación de la v1.4: Review (diff y comentarios en lote), inspecto
 
 - `RT_OPEN_REVIEW=1`, `RT_REVIEW_SELECT=n`, `RT_REVIEW_DEMO=1` (comentarios de ejemplo) y `RT_REVIEW_AUTOSEND=1` son ayudas de verificación y solo existen en compilaciones debug.
 - Un test del núcleo, `term::tests::unhandled_sequences_are_recorded`, falla de forma intermitente (1 de cada ~12 ejecuciones de `cargo test`). Es anterior a esta versión (`crates/core`, sin tocar) y probablemente comparte estado global con otros tests.
+
+## Cierre de la v1.4: PR y descartar worktree
+
+- [ ] La barra de terminado tiene «Abrir PR…» junto a «Revisar cambios», y la cabecera de Review tiene «Abrir PR…» y «Descartar worktree…».
+- [ ] «Abrir PR…» **pide confirmación con las órdenes exactas** (`git push -u origin <rama>` y `gh pr create --fill …`) y avisa de los archivos sin commit, que no entran en el PR. Sin rama propia o sin commits nuevos, explica por qué no se puede. Al terminar enseña la URL con «Abrir en el navegador».
+- [ ] «Descartar worktree…» solo funciona con worktrees de `.claude/worktrees`, no con el proyecto. Confirma, enseña cuántos archivos sin commit se pierden y **conserva la rama**. No deja descartar con el agente trabajando.
+- Sin comprobar a mano: los clics y el flujo completo contra GitHub.
+

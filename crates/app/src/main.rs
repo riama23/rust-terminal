@@ -235,6 +235,33 @@ fn build_menu(app: &NSApplication, mtm: MainThreadMarker) {
         );
         window_items.push(item);
     }
+    let zoom = menu_item(mtm, "Ampliar o restaurar el panel", sel!(toggleZoom:), "\r");
+    zoom.setKeyEquivalentModifierMask(NSEventModifierFlags::Command | NSEventModifierFlags::Shift);
+    window_items.push(zoom);
+    for (title, action, key) in [
+        (
+            "Mover el divisor a la izquierda",
+            sel!(resizeLeft:),
+            "\u{F702}",
+        ),
+        (
+            "Mover el divisor a la derecha",
+            sel!(resizeRight:),
+            "\u{F703}",
+        ),
+        ("Mover el divisor hacia arriba", sel!(resizeUp:), "\u{F700}"),
+        (
+            "Mover el divisor hacia abajo",
+            sel!(resizeDown:),
+            "\u{F701}",
+        ),
+    ] {
+        let item = menu_item(mtm, title, action, key);
+        item.setKeyEquivalentModifierMask(
+            NSEventModifierFlags::Command | NSEventModifierFlags::Control,
+        );
+        window_items.push(item);
+    }
     for n in 1..=9 {
         let item = menu_item(
             mtm,

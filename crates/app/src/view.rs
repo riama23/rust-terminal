@@ -13,7 +13,7 @@ use std::sync::atomic::Ordering::SeqCst;
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, NSObjectProtocol, Sel};
-use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send};
+use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSApplication, NSCursor, NSEvent, NSEventModifierFlags,
     NSMenuItem, NSPasteboard, NSPasteboardTypeString, NSRequestUserAttentionType, NSResponder,
@@ -49,6 +49,8 @@ struct Geometry {
     tab_bar: Option<TabBar>,
     panes: Vec<(PaneId, Rect)>,
     dividers: Vec<Divider>,
+    /// Cabeceras de los paneles (vacío con un solo panel).
+    headers: Vec<(PaneId, Rect)>,
 }
 
 /// Qué se está arrastrando con el ratón.
@@ -90,6 +92,9 @@ pub struct ViewIvars {
     /// La ventana es la activa y qué panel tenía el foco (avisos `?1004`).
     window_key: Cell<bool>,
     last_focus: Cell<Option<PaneId>>,
+    /// Fotograma del spinner de las pestañas y si su reloj está en marcha.
+    spinner_phase: Cell<usize>,
+    spinner_running: Cell<bool>,
     /// Agentes de Claude Code de esta ventana (sidebar y attention bar).
     pub(crate) agents: crate::agent_controller::AgentController,
 }
@@ -158,6 +163,22 @@ define_class!(
         #[unsafe(method(reviewSend:))]
         fn review_send_action(&self, _sender: Option<&AnyObject>) {
             self.review_send();
+        }
+
+        /// «Abrir PR…» de la barra de terminado: el agente del panel con el foco.
+        #[unsafe(method(openPullRequest:))]
+        fn open_pull_request_action(&self, _sender: Option<&AnyObject>) {
+            self.open_pr_focused();
+        }
+
+        #[unsafe(method(reviewOpenPR:))]
+        fn review_open_pr_action(&self, _sender: Option<&AnyObject>) {
+            self.open_pr_review();
+        }
+
+        #[unsafe(method(reviewDiscard:))]
+        fn review_discard_action(&self, _sender: Option<&AnyObject>) {
+            self.discard_worktree_review();
         }
 
         #[unsafe(method(reviewRefresh:))]
@@ -335,6 +356,39 @@ define_class!(
         fn previous_tab(&self, _sender: Option<&AnyObject>) {
             self.with_workspace_mut(Workspace::previous);
             self.update_layout();
+        }
+
+        /// ⌘⇧↵: el panel con el foco ocupa toda la pestaña.
+        /// Siguiente fotograma del spinner de las pestañas ocupadas.
+        #[unsafe(method(spinnerTick))]
+        fn spinner_tick(&self) {
+            self.spin();
+        }
+
+        #[unsafe(method(toggleZoom:))]
+        fn toggle_zoom_action(&self, _sender: Option<&AnyObject>) {
+            self.with_workspace_mut(|w| w.tab_mut().toggle_zoom());
+            self.update_layout();
+        }
+
+        #[unsafe(method(resizeLeft:))]
+        fn resize_left_action(&self, _sender: Option<&AnyObject>) {
+            self.resize_pane(Direction::Left);
+        }
+
+        #[unsafe(method(resizeRight:))]
+        fn resize_right_action(&self, _sender: Option<&AnyObject>) {
+            self.resize_pane(Direction::Right);
+        }
+
+        #[unsafe(method(resizeUp:))]
+        fn resize_up_action(&self, _sender: Option<&AnyObject>) {
+            self.resize_pane(Direction::Up);
+        }
+
+        #[unsafe(method(resizeDown:))]
+        fn resize_down_action(&self, _sender: Option<&AnyObject>) {
+            self.resize_pane(Direction::Down);
         }
 
         #[unsafe(method(focusLeft:))]
@@ -562,6 +616,8 @@ impl TerminalView {
             last_reported: Cell::new(None),
             window_key: Cell::new(true),
             last_focus: Cell::new(None),
+            spinner_phase: Cell::new(0),
+            spinner_running: Cell::new(false),
             agents: Default::default(),
         });
         // SAFETY: `initWithFrame:` de NSView.
@@ -813,6 +869,52 @@ impl TerminalView {
         }
     }
 
+    fn any_tab_busy(&self) -> bool {
+        self.ivars()
+            .sessions
+            .borrow()
+            .values()
+            .any(|s| s.busy.load(SeqCst) && !s.exited.load(SeqCst))
+    }
+
+    /// Cambió qué pestañas tienen un programa en primer plano: se repinta la
+    /// barra y, si alguna está ocupada, arranca el reloj del spinner.
+    fn busy_changed(&self) {
+        self.update_layout();
+        if self.any_tab_busy() && !self.ivars().spinner_running.replace(true) {
+            self.spin();
+        }
+    }
+
+    /// Un fotograma del spinner y el siguiente 120 ms después. Sin pestañas
+    /// ocupadas el reloj se detiene: en reposo no hay frames.
+    fn spin(&self) {
+        if !self.any_tab_busy() {
+            self.ivars().spinner_running.set(false);
+            return;
+        }
+        let phase = self.ivars().spinner_phase.get().wrapping_add(1);
+        self.ivars().spinner_phase.set(phase);
+        if let Some(wf) = self.ivars().window.frame.lock().unwrap().as_mut()
+            && let Some(bar) = wf.tab_bar.as_mut()
+        {
+            bar.spinner_phase = phase;
+        }
+        self.request_frame();
+        // SAFETY: `spinnerTick` existe en esta clase y no lleva argumentos.
+        let _: () = unsafe {
+            msg_send![self, performSelector: sel!(spinnerTick), withObject: None::<&AnyObject>, afterDelay: 0.12f64]
+        };
+    }
+
+    /// ⌘⌃flecha: mueve el divisor más cercano del panel con el foco.
+    fn resize_pane(&self, dir: Direction) {
+        let moved = self.with_workspace_mut(|w| w.tab_mut().resize_focused(dir, 0.05));
+        if moved {
+            self.update_layout();
+        }
+    }
+
     /// Pide confirmación si alguna de las sesiones tiene un programa en marcha.
     fn confirm_close(&self, sessions: &[Arc<Session>], what: &str) -> bool {
         if !sessions.iter().any(|s| s.is_busy()) {
@@ -919,7 +1021,12 @@ impl TerminalView {
                     .get(&tab.focused)
                     .map(|s| s.title())
                     .unwrap_or_default();
+                let busy = tab
+                    .panes()
+                    .iter()
+                    .any(|p| sessions.get(p).is_some_and(|s| s.busy.load(SeqCst)));
                 TabItem {
+                    busy,
                     title,
                     rect: [x as f32, 0.0, tab_w as f32, bar_h as f32],
                     close: [
@@ -936,6 +1043,7 @@ impl TerminalView {
             rect: [0.0, 0.0, w as f32, bar_h as f32],
             tabs,
             plus: [(n * tab_w) as f32, 0.0, plus_w as f32, bar_h as f32],
+            spinner_phase: self.ivars().spinner_phase.get(),
         };
 
         let area = Rect {
@@ -944,7 +1052,21 @@ impl TerminalView {
             w,
             h: (h - bar_h).max(1.0),
         };
-        let (panes, dividers) = workspace.tab().layout(area, scale.round().max(1.0));
+        let (mut panes, dividers) = workspace.tab().layout(area, scale.round().max(1.0));
+        // Con varios paneles (y sin zoom), cada uno lleva su cabecera de 30 pt
+        // en lo alto: el panel pierde ese alto y todo lo demás (ratón,
+        // tamaño de la PTY) usa el rectángulo ya recortado.
+        let mut headers = Vec::new();
+        if panes.len() > 1 && self.ivars().config.borrow().pane_headers {
+            let header_h = (30.0 * scale).round();
+            for (id, r) in &mut panes {
+                if r.h > header_h * 2.0 {
+                    headers.push((*id, Rect { h: header_h, ..*r }));
+                    r.y += header_h;
+                    r.h -= header_h;
+                }
+            }
+        }
         Some(Geometry {
             scale,
             metrics: Some(m),
@@ -952,6 +1074,7 @@ impl TerminalView {
             tab_bar: Some(tab_bar),
             panes,
             dividers,
+            headers,
         })
     }
 
@@ -973,6 +1096,7 @@ impl TerminalView {
         }
 
         let focused = self.with_workspace(Workspace::focused);
+        let dim_unfocused = self.ivars().config.borrow().dim_unfocused;
         let sessions = self.ivars().sessions.borrow();
         let mut slots = Vec::new();
         for (id, r) in &g.panes {
@@ -984,6 +1108,7 @@ impl TerminalView {
                 rect: [r.x as f32, r.y as f32, r.w as f32, r.h as f32],
                 pad: g.pad as f32,
                 focused: *id == focused,
+                dim: dim_unfocused && g.panes.len() > 1 && *id != focused,
                 link: self
                     .ivars()
                     .hover_link
@@ -999,6 +1124,11 @@ impl TerminalView {
             s.visible.store(visible, SeqCst);
         }
         let title = sessions.get(&focused).map(|s| s.title());
+        let header_titles: std::collections::HashMap<PaneId, String> = g
+            .headers
+            .iter()
+            .filter_map(|(id, _)| sessions.get(id).map(|s| (*id, s.title())))
+            .collect();
         // Avisos de foco (`?1004`) al cambiar de panel.
         let previous = self.ivars().last_focus.replace(Some(focused));
         if previous != Some(focused) && self.ivars().window_key.get() {
@@ -1028,6 +1158,15 @@ impl TerminalView {
                         d.rect.w as f32,
                         d.rect.h as f32,
                     ]
+                })
+                .collect(),
+            headers: g
+                .headers
+                .iter()
+                .map(|(id, r)| crate::renderer::PaneHeader {
+                    rect: [r.x as f32, r.y as f32, r.w as f32, r.h as f32],
+                    title: header_titles.get(id).cloned().unwrap_or_default(),
+                    focused: *id == focused,
                 })
                 .collect(),
             tab_bar: g.tab_bar.clone(),
@@ -1575,6 +1714,7 @@ impl TerminalView {
                         };
                         notify::notify(&title, &format!("{command} · {seconds} s"));
                     }
+                    AppEvent::Busy(_) => self.busy_changed(),
                     AppEvent::Claude(running) if config.track_manual_claude => {
                         self.claude_foreground(s.id, running);
                     }
