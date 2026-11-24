@@ -10,9 +10,9 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering::SeqCst;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use objc2::MainThreadOnly;
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::Sel;
-use objc2::{MainThreadOnly, sel};
 use objc2_app_kit::{NSApplication, NSAutoresizingMaskOptions};
 
 use crate::command_palette::{self as cp, Frecency, Item, Kind, Scope};
@@ -39,60 +39,6 @@ struct Inner {
     /// Comando de cada flujo, por su clave.
     flows: Vec<(String, String)>,
     frecency: Frecency,
-}
-
-/// Las acciones del menú: título, atajo y selector.
-fn action_table() -> Vec<(&'static str, &'static str, Sel)> {
-    vec![
-        ("Nueva pestaña", "⌘T", sel!(newTab:)),
-        ("Nuevo agente…", "⌘N", sel!(newAgent:)),
-        ("Revisar cambios del agente", "⌘⇧R", sel!(reviewChanges:)),
-        ("Dividir en vertical", "⌘D", sel!(splitVertical:)),
-        ("Dividir en horizontal", "⌘⇧D", sel!(splitHorizontal:)),
-        ("Cerrar el panel", "⌘W", sel!(closePane:)),
-        ("Cerrar la pestaña", "⌘⇧W", sel!(closeTab:)),
-        ("Pestaña anterior", "⌘⇧[", sel!(previousTab:)),
-        ("Pestaña siguiente", "⌘⇧]", sel!(nextTab:)),
-        ("Ampliar o restaurar el panel", "⌘⇧↵", sel!(toggleZoom:)),
-        ("Panel de la izquierda", "⌘⌥←", sel!(focusLeft:)),
-        ("Panel de la derecha", "⌘⌥→", sel!(focusRight:)),
-        ("Panel de arriba", "⌘⌥↑", sel!(focusUp:)),
-        ("Panel de abajo", "⌘⌥↓", sel!(focusDown:)),
-        ("Mover el divisor a la izquierda", "⌘⌃←", sel!(resizeLeft:)),
-        ("Mover el divisor a la derecha", "⌘⌃→", sel!(resizeRight:)),
-        ("Mover el divisor hacia arriba", "⌘⌃↑", sel!(resizeUp:)),
-        ("Mover el divisor hacia abajo", "⌘⌃↓", sel!(resizeDown:)),
-        ("Bloque anterior", "⌘↑", sel!(previousBlock:)),
-        ("Bloque siguiente", "⌘↓", sel!(nextBlock:)),
-        ("Relanzar el bloque seleccionado", "", sel!(blockRerun:)),
-        (
-            "Relanzar solo los tests fallidos del bloque",
-            "",
-            sel!(blockRerunFailed:),
-        ),
-        (
-            "Copiar la salida del bloque seleccionado",
-            "",
-            sel!(blockCopy:),
-        ),
-        ("Detener el bloque en ejecución", "", sel!(blockStop:)),
-        (
-            "Colapsar o expandir la salida del bloque",
-            "",
-            sel!(blockCollapse:),
-        ),
-        (
-            "Abrir el error del bloque en el editor",
-            "⌘O",
-            sel!(blockOpen:),
-        ),
-        (
-            "Copiar la salida del último comando",
-            "⌘⇧C",
-            sel!(copyLastOutput:),
-        ),
-        ("Informar de un fallo…", "⌘⇧I", sel!(reportIssue:)),
-    ]
 }
 
 fn now_secs() -> u64 {
@@ -282,17 +228,23 @@ impl TerminalView {
                 });
             }
         }
-        for (label, shortcut, selector) in action_table() {
-            let key = format!("act:{}", selector.name().to_string_lossy());
+        let bindings = self.keybindings();
+        for a in crate::keybindings::ACTIONS {
+            // `reportIssue:` etc. se resuelven por la cadena de respuesta.
+            let Ok(name) = std::ffi::CString::new(a.selector) else {
+                continue;
+            };
+            let selector = Sel::register(&name);
+            let key = format!("act:{}", a.selector);
+            let detail = match crate::keybindings::shortcut_for(&bindings, a.id) {
+                Some(s) => crate::keybindings::describe(&s),
+                None => "Sin atajo".to_owned(),
+            };
             items.push(Item {
                 kind: Kind::Action,
                 key: key.clone(),
-                label: label.to_owned(),
-                detail: if shortcut.is_empty() {
-                    "Sin atajo".to_owned()
-                } else {
-                    shortcut.to_owned()
-                },
+                label: a.label.to_owned(),
+                detail,
             });
             actions.push((key, selector));
         }

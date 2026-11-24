@@ -103,6 +103,8 @@ pub struct ViewIvars {
     pub(crate) agents: crate::agent_controller::AgentController,
     /// La paleta de comandos (⌘⇧P).
     pub(crate) palette: crate::palette_controller::PaletteController,
+    /// La ventana de ajustes (⌘,).
+    pub(crate) settings: crate::settings_controller::SettingsController,
 }
 
 define_class!(
@@ -386,6 +388,38 @@ define_class!(
         }
 
         /// ⌘⇧P: la paleta de comandos.
+        /// ⌘,: la ventana de ajustes.
+        #[unsafe(method(openSettings:))]
+        fn open_settings_action(&self, _sender: Option<&AnyObject>) {
+            self.open_settings();
+        }
+
+        #[unsafe(method(settingsToggle:))]
+        fn settings_toggle_action(&self, sender: Option<&AnyObject>) {
+            if let Some(s) = sender {
+                self.settings_toggle(s);
+            }
+        }
+
+        #[unsafe(method(settingsCommit:))]
+        fn settings_commit_action(&self, sender: Option<&AnyObject>) {
+            if let Some(s) = sender {
+                self.settings_commit(s);
+            }
+        }
+
+        #[unsafe(method(settingsReset:))]
+        fn settings_reset_action(&self, sender: Option<&AnyObject>) {
+            if let Some(s) = sender {
+                self.settings_reset(s);
+            }
+        }
+
+        #[unsafe(method(settingsOpenFile:))]
+        fn settings_open_file_action(&self, _sender: Option<&AnyObject>) {
+            self.settings_open_file();
+        }
+
         #[unsafe(method(commandPalette:))]
         fn command_palette_action(&self, _sender: Option<&AnyObject>) {
             self.toggle_palette();
@@ -648,6 +682,7 @@ impl TerminalView {
             collapsed_blocks: Default::default(),
             agents: Default::default(),
             palette: Default::default(),
+            settings: Default::default(),
         });
         // SAFETY: `initWithFrame:` de NSView.
         unsafe { msg_send![super(this), initWithFrame: frame] }
@@ -712,6 +747,15 @@ impl TerminalView {
 
     pub(crate) fn agents(&self) -> &crate::agent_controller::AgentController {
         &self.ivars().agents
+    }
+
+    /// Los atajos configurados (`[keybindings]`).
+    pub(crate) fn keybindings(&self) -> std::collections::HashMap<String, String> {
+        self.ivars().config.borrow().keybindings.clone()
+    }
+
+    pub(crate) fn ivars_settings(&self) -> &crate::settings_controller::SettingsController {
+        &self.ivars().settings
     }
 
     pub(crate) fn ivars_palette(&self) -> &crate::palette_controller::PaletteController {
@@ -829,6 +873,7 @@ impl TerminalView {
             s.long_command_secs
                 .store(config.long_command_seconds, SeqCst);
         }
+        crate::apply_keybindings(self.mtm(), &config);
         *self.ivars().config.borrow_mut() = config;
         self.update_layout();
     }
