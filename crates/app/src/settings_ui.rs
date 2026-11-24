@@ -37,7 +37,7 @@ pub const PAGES: &[(&str, &[&str])] = &[
         ],
     ),
     ("Apariencia", &["appearance", "font", "colors", "window"]),
-    ("Teclado", &["keybindings"]),
+    ("Teclado", &["keyboard", "keybindings"]),
     ("Terminal rápido", &["quick_terminal"]),
     ("Bloques y agentes", &["blocks", "agents", "control"]),
 ];

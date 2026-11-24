@@ -397,6 +397,11 @@ impl Term {
         }
     }
 
+    /// Borra el historial (lo que hace ED 3) y deja la pantalla como está.
+    pub fn clear_scrollback(&mut self) {
+        self.screen.erase_display(3);
+    }
+
     pub fn scroll_to_bottom(&mut self) {
         self.scroll_display(isize::MIN / 2);
     }

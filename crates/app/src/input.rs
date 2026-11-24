@@ -120,6 +120,48 @@ pub fn encode_key(key: Key, mods: Mods, app_cursor: bool) -> Vec<u8> {
     }
 }
 
+/// Edición por palabras al estilo de macOS: Option o Ctrl con ←/→ saltan de
+/// palabra (`ESC b`, `ESC f`), Option+⌫ borra la anterior (`ESC DEL`) y
+/// Option+Supr la siguiente (`ESC d`). Son las secuencias que readline y zsh
+/// enlazan por defecto, sin tocar `~/.zshrc`.
+pub fn word_edit(key: Key, mods: Mods) -> Option<Vec<u8>> {
+    if mods.shift {
+        return None;
+    }
+    let jump = mods.alt || mods.ctrl;
+    match key {
+        Key::Left if jump => Some(b"\x1bb".to_vec()),
+        Key::Right if jump => Some(b"\x1bf".to_vec()),
+        Key::Backspace if mods.alt => Some(b"\x1b\x7f".to_vec()),
+        Key::Delete if mods.alt => Some(b"\x1bd".to_vec()),
+        _ => None,
+    }
+}
+
+/// Edición de línea con ⌘ al estilo de Terminal.app e iTerm2: ⌘← inicio de
+/// línea (`^A`), ⌘→ final (`^E`), ⌘⌫ borra hasta el inicio (`^U`) y ⌘Supr
+/// hasta el final (`^K`).
+pub fn command_edit(key: Key) -> Option<&'static [u8]> {
+    match key {
+        Key::Left => Some(b"\x01"),
+        Key::Right => Some(b"\x05"),
+        Key::Backspace => Some(b"\x15"),
+        Key::Delete => Some(b"\x0b"),
+        _ => None,
+    }
+}
+
+/// ⌘⇧←/→: seleccionar hasta el inicio o el final de la línea. No existe una
+/// secuencia estándar; se usa la de xterm para Shift+Super (`1;10`), que la
+/// integración con zsh enlaza a su widget de selección.
+pub fn command_select(key: Key) -> Option<&'static [u8]> {
+    match key {
+        Key::Left => Some(b"\x1b[1;10D"),
+        Key::Right => Some(b"\x1b[1;10C"),
+        _ => None,
+    }
+}
+
 /// Byte de control para Ctrl+`c`, con las equivalencias habituales de xterm.
 pub fn ctrl_byte(c: char) -> Option<u8> {
     Some(match c.to_ascii_lowercase() {
@@ -451,6 +493,56 @@ mod tests {
         alt: false,
         ctrl: false,
     };
+
+    #[test]
+    fn option_and_ctrl_arrows_jump_words() {
+        let alt = Mods { alt: true, ..NONE };
+        let ctrl = Mods { ctrl: true, ..NONE };
+        assert_eq!(word_edit(Key::Left, alt).as_deref(), Some(&b"\x1bb"[..]));
+        assert_eq!(word_edit(Key::Right, alt).as_deref(), Some(&b"\x1bf"[..]));
+        assert_eq!(word_edit(Key::Left, ctrl).as_deref(), Some(&b"\x1bb"[..]));
+        assert_eq!(word_edit(Key::Right, ctrl).as_deref(), Some(&b"\x1bf"[..]));
+    }
+
+    #[test]
+    fn option_backspace_and_delete_remove_words() {
+        let alt = Mods { alt: true, ..NONE };
+        assert_eq!(
+            word_edit(Key::Backspace, alt).as_deref(),
+            Some(&b"\x1b\x7f"[..])
+        );
+        assert_eq!(word_edit(Key::Delete, alt).as_deref(), Some(&b"\x1bd"[..]));
+    }
+
+    #[test]
+    fn word_edit_ignores_plain_shifted_and_other_keys() {
+        let shift_alt = Mods {
+            shift: true,
+            alt: true,
+            ..NONE
+        };
+        assert_eq!(word_edit(Key::Left, NONE), None);
+        assert_eq!(word_edit(Key::Left, shift_alt), None);
+        assert_eq!(word_edit(Key::Up, Mods { alt: true, ..NONE }), None);
+        assert_eq!(word_edit(Key::Backspace, Mods { ctrl: true, ..NONE }), None);
+    }
+
+    #[test]
+    fn command_keys_edit_the_line() {
+        assert_eq!(command_edit(Key::Left), Some(&b"\x01"[..]));
+        assert_eq!(command_edit(Key::Right), Some(&b"\x05"[..]));
+        assert_eq!(command_edit(Key::Backspace), Some(&b"\x15"[..]));
+        assert_eq!(command_edit(Key::Delete), Some(&b"\x0b"[..]));
+        assert_eq!(command_edit(Key::Up), None);
+    }
+
+    #[test]
+    fn command_shift_arrows_select_to_line_ends() {
+        assert_eq!(command_select(Key::Left), Some(&b"\x1b[1;10D"[..]));
+        assert_eq!(command_select(Key::Right), Some(&b"\x1b[1;10C"[..]));
+        assert_eq!(command_select(Key::Up), None);
+        assert_eq!(command_select(Key::Backspace), None);
+    }
 
     #[test]
     fn arrows_follow_decckm() {

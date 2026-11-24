@@ -101,6 +101,88 @@ __rt_claude() {
   fi
 }
 
+# Selección con ⇧← / ⇧→ (RT_SHIFT_SELECT=1). `__rt_sel` vale 1 mientras la
+# región activa la ha creado esta integración; las regiones del usuario
+# (Ctrl+Espacio) no se tocan.
+typeset -gi __rt_sel=0
+
+__rt_shift_select() {
+  (( REGION_ACTIVE )) || zle set-mark-command
+  __rt_sel=1
+  case $WIDGET in
+    __rt-select-left) zle backward-char ;;
+    __rt-select-right) zle forward-char ;;
+    __rt-select-word-left) zle backward-word ;;
+    __rt-select-word-right) zle forward-word ;;
+    __rt-select-home) zle beginning-of-line ;;
+    __rt-select-end) zle end-of-line ;;
+  esac
+}
+
+# Borra el texto seleccionado sin pasar por el kill ring.
+__rt_sel_delete() {
+  local a=$(( MARK < CURSOR ? MARK : CURSOR ))
+  local b=$(( MARK < CURSOR ? CURSOR : MARK ))
+  BUFFER="${BUFFER[1,a]}${BUFFER[b+1,-1]}"
+  CURSOR=$a
+  REGION_ACTIVE=0
+  __rt_sel=0
+}
+
+# Teclear, ⌫ o Supr con una selección propia la reemplazan o la borran; si no
+# la hay, se delega en el widget que hubiera antes.
+__rt_sel_wrapper() {
+  if (( __rt_sel && REGION_ACTIVE )); then
+    __rt_sel_delete
+    [[ $WIDGET == self-insert ]] || return 0
+  fi
+  __rt_sel=0
+  zle "__rt_orig_$WIDGET" -- "$@"
+}
+
+# Cualquier otro widget (mover el cursor, Esc, Intro…) quita la selección.
+__rt_sel_redraw() {
+  (( __rt_sel )) || return 0
+  [[ $LASTWIDGET == __rt-select-* ]] && return 0
+  REGION_ACTIVE=0
+  __rt_sel=0
+}
+
+__rt_shift_select_init() {
+  emulate -L zsh
+  builtin autoload -Uz add-zle-hook-widget
+  local name seq map w
+  local -A keys=(
+    __rt-select-left       '^[[1;2D'
+    __rt-select-right      '^[[1;2C'
+    __rt-select-word-left  '^[[1;4D'
+    __rt-select-word-right '^[[1;4C'
+    __rt-select-home       '^[[1;10D'
+    __rt-select-end        '^[[1;10C'
+  )
+  for name seq in ${(kv)keys}; do
+    zle -N $name __rt_shift_select
+    for map in emacs viins; do
+      # No se pisa un enlace del usuario.
+      [[ $(builtin bindkey -M $map -- $seq 2>/dev/null) == *undefined-key* ]] \
+        && builtin bindkey -M $map -- $seq $name
+    done
+  done
+  # ⇧Inicio / ⇧Fin hacen lo mismo que ⌘⇧←/→.
+  for map in emacs viins; do
+    [[ $(builtin bindkey -M $map -- '^[[1;2H' 2>/dev/null) == *undefined-key* ]] \
+      && builtin bindkey -M $map -- '^[[1;2H' __rt-select-home
+    [[ $(builtin bindkey -M $map -- '^[[1;2F' 2>/dev/null) == *undefined-key* ]] \
+      && builtin bindkey -M $map -- '^[[1;2F' __rt-select-end
+  done
+  # Se envuelve lo que haya ahora (puede ser el de un plugin).
+  for w in self-insert backward-delete-char delete-char; do
+    zle -A $w "__rt_orig_$w" 2>/dev/null || continue
+    zle -N $w __rt_sel_wrapper
+  done
+  add-zle-hook-widget zle-line-pre-redraw __rt_sel_redraw
+}
+
 __rt_deferred_init() {
   emulate -L zsh
   precmd_functions=(__rt_save_status ${precmd_functions:#(__rt_deferred_init|__rt_save_status|__rt_precmd)} __rt_precmd)
@@ -111,6 +193,7 @@ __rt_deferred_init() {
   fi
   builtin autoload -Uz add-zle-hook-widget
   add-zle-hook-widget zle-line-init __rt_line_init
+  [[ -n ${RT_SHIFT_SELECT-} ]] && __rt_shift_select_init
   # Este primer prompt: los hooks recién colocados aún no han corrido.
   __rt_precmd
 }

@@ -314,6 +314,56 @@ precmd_functions+=(fake_theme)
     }
 
     /// Un `claude` falso que imprime sus argumentos, y su PATH.
+    /// Escribe `keys` (con secuencias de teclas) y pulsa Intro; devuelve el
+    /// comando que zsh llegó a ejecutar.
+    fn typed_command(zshrc: &str, keys: &str) -> String {
+        let env = [("RT_SHIFT_SELECT".to_owned(), "1".to_owned())];
+        let mut s = Session::start_with_env(zshrc, 60, 20, &env);
+        s.wait_prompt(1);
+        s.run(keys);
+        let b = s.term.blocks();
+        b[0].command.clone().unwrap_or_default()
+    }
+
+    #[test]
+    fn shift_arrows_select_and_typing_replaces() {
+        // ⇧← dos veces selecciona «bc»; teclear X lo reemplaza.
+        let cmd = typed_command(ZSHRC, "echo abc\x1b[1;2D\x1b[1;2DX");
+        assert_eq!(cmd, "echo aX");
+    }
+
+    #[test]
+    fn plain_arrow_clears_the_selection() {
+        // ⇧← selecciona «c»; ← sin Shift la quita y X se inserta sin borrar nada.
+        let cmd = typed_command(ZSHRC, "echo abc\x1b[1;2D\x1b[DX");
+        assert_eq!(cmd, "echo aXbc");
+    }
+
+    #[test]
+    fn backspace_deletes_the_selection() {
+        let cmd = typed_command(ZSHRC, "echo abc\x1b[1;2D\x1b[1;2D\x7f!");
+        assert_eq!(cmd, "echo a!");
+    }
+
+    #[test]
+    fn command_shift_left_selects_to_line_start() {
+        let cmd = typed_command(ZSHRC, "ls\x1b[1;10Decho ok");
+        assert_eq!(cmd, "echo ok");
+    }
+
+    #[test]
+    fn option_shift_arrow_selects_a_word() {
+        let cmd = typed_command(ZSHRC, "echo uno dos\x1b[1;4DX");
+        assert_eq!(cmd, "echo uno X");
+    }
+
+    #[test]
+    fn user_binding_for_shift_arrow_is_kept() {
+        let zshrc = format!("{ZSHRC}\nbindkey '^[[1;2D' backward-word\n");
+        let cmd = typed_command(&zshrc, "echo ab cd\x1b[1;2DX");
+        assert_eq!(cmd, "echo ab Xcd");
+    }
+
     fn fake_claude() -> (tempdir::Dir, Vec<(String, String)>) {
         use std::os::unix::fs::PermissionsExt;
         let bin = tempdir::Dir::new("bin");

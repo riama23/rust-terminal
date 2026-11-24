@@ -258,6 +258,32 @@ Con la ventana en segundo plano, la campana (BEL) hace rebotar el icono del Dock
 - **Por defecto:** `true`
 - **Se aplica:** en vivo
 
+## `[keyboard]`
+
+### `option_as_meta`
+
+Qué tecla Option actúa como Meta (⌥← y ⌥→ saltan de palabra, ⌥⌫ la borra): `left` (la izquierda; la derecha compone @, # y acentos), `both` o `none` (Option solo compone).
+
+- **Tipo:** uno de: `"left"`, `"both"`, `"none"`
+- **Por defecto:** `"left"`
+- **Se aplica:** en vivo
+
+### `command_line_editing`
+
+⌘← y ⌘→ van al inicio y al final de la línea, ⌘⌫ borra hasta el inicio y ⌘Supr hasta el final. Los atajos del menú tienen prioridad.
+
+- **Tipo:** `true` o `false`
+- **Por defecto:** `true`
+- **Se aplica:** en vivo
+
+### `shift_select`
+
+⇧←/→ seleccionan texto en la línea de comandos de zsh (⌥⇧ por palabras, ⌘⇧ hasta el inicio o el final). Requiere la integración con zsh.
+
+- **Tipo:** `true` o `false`
+- **Por defecto:** `true`
+- **Se aplica:** pestañas nuevas
+
 ## `[keybindings]`
 
 ### `command_palette`
@@ -290,6 +316,14 @@ Nueva pestaña. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `a
 
 - **Tipo:** un texto
 - **Por defecto:** `"cmd+t"`
+- **Se aplica:** en vivo
+
+### `clear_screen`
+
+Limpiar pantalla. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `"cmd+k"`
 - **Se aplica:** en vivo
 
 ### `split_vertical`
