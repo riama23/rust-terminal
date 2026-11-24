@@ -1,6 +1,6 @@
 # Verificación manual: v1.6
 
-Entrega A (hecha): teclado configurable y ventana de ajustes. Entrega B: tema Paper y *Follow system*. Pendiente: badge PROD (C) y quick terminal (D).
+Entrega A (hecha): teclado configurable y ventana de ajustes. Entrega B (hecha): tema Paper y *Follow system*. Entrega C: badge PROD. Pendiente: quick terminal (D).
 
 ## Teclado configurable
 
@@ -27,4 +27,12 @@ Entrega A (hecha): teclado configurable y ventana de ajustes. Entrega B: tema Pa
 - [ ] Los colores que pongas en `[colors]` mandan sobre los del tema (`colors.background` fijo se queda aunque cambies de tema).
 - **Desviaciones del spec (contraste):** el spec pide 4,5:1 para el texto y sus valores `ok` (`#1F8A4C`) y `attention` (`#A86400`) de Paper no lo cumplen sobre su fondo (4,2:1 y 4,5:1 sobre la barra lateral). Se usan `#1B7F45` y `#9A5A00`. La paleta ANSI de Paper (que el spec deja sin definir) se deriva de los colores de estado y **todos sus colores cumplen 4,5:1** sobre el fondo, incluido el «blanco» (7 y 15), que es un gris oscuro porque un blanco no se leería. Lo comprueban tests.
 - Comprobado: las vistas de AppKit (ajustes y paleta) en Paper con capturas, y el cambio en caliente Dusk → Paper (el fondo de la ventana de ajustes pasó de `#131417` a `#FBFBFA` al editar el archivo). Sin comprobar a mano: la terminal con Paper a la vista (usa los mismos colores del tema que Dusk, sin código propio), el modo `system` al alternar el sistema y las pantallas de agentes en Paper.
+
+## Badge PROD (entrega C)
+
+- [ ] `[ssh] production_hosts = ["prod-*", "*.prod.example.com", "db1"]` (también en Ajustes → General): patrones con `*` y `?`, sin distinguir mayúsculas.
+- [ ] Una pestaña (o un panel, en su cabecera) cuyo primer plano es un `ssh` a un host que coincide lleva el distintivo naranja **PROD**. Se compara con el destino escrito (`ssh me@prod-db` → `prod-db`; entiende `-p 2222`, `-tt`, `-J salto destino`, `ssh://…` e IPv6). Si usas alias de `~/.ssh/config`, pon el alias.
+- [ ] El distintivo aparece al arrancar el comando (se vuelve a mirar el primer plano a los 0,4, 2 y 5 s, porque `ssh` no escribe nada mientras conecta) y desaparece al volver al prompt.
+- **Fuera de esta entrega:** el distintivo en la sidebar de shells (la sidebar solo lista agentes) y la *protección de producción* del editor de entrada (que pide confirmar comandos en hosts PROD); el roadmap marca el editor de entrada como fuera de alcance.
+- Comprobado: la detección con un `ssh` de mentira (un enlace a `sleep` llamado `ssh`): `prod=true` mientras corre y con el patrón que coincide, `false` si no coincide y al terminar (volcado `RT_DUMP_TABS`, solo debug); el parser de `ssh`, los patrones y el dibujo del distintivo en pestaña y cabecera (tests). Sin comprobar a mano: verlo en la ventana y con un `ssh` real.
 

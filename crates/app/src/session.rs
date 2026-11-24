@@ -30,6 +30,8 @@ pub enum AppEvent {
     },
     /// Claude Code pasó a ser (o dejó de ser) el programa en primer plano.
     Claude(bool),
+    /// El destino del `ssh` que ocupa el primer plano cambió (`None`: ya no hay).
+    Ssh(Option<String>),
     /// Un programa distinto de la shell ocupa (o dejó de ocupar) el primer
     /// plano: la pestaña muestra su spinner.
     Busy(bool),
@@ -54,6 +56,10 @@ pub struct Session {
     pub exited: AtomicBool,
     /// Hay un programa en primer plano que no es la shell (lo pone el lector).
     pub busy: AtomicBool,
+    /// Host del `ssh` en primer plano (lo pone el lector).
+    ssh_host: Mutex<Option<String>>,
+    /// Último primer plano visto y si era Claude Code (para avisar solo de cambios).
+    fg_state: Mutex<(Option<u32>, bool)>,
     /// Eventos pendientes para la app.
     pending: Mutex<Vec<AppEvent>>,
     /// Último bloque terminado que ya se revisó (para avisar una sola vez).
@@ -105,12 +111,57 @@ impl Session {
             visible: AtomicBool::new(true),
             exited: AtomicBool::new(false),
             busy: AtomicBool::new(false),
+            ssh_host: Mutex::new(None),
+            fg_state: Mutex::new((None, false)),
             pending: Mutex::new(Vec::new()),
             last_finished: AtomicU64::new(0),
             long_command_secs: AtomicU64::new(opts.long_command_secs),
         });
         start_reader(session.clone(), reader, child, waker);
         Ok(session)
+    }
+
+    /// Mira qué programa ocupa el primer plano y devuelve los avisos de lo que
+    /// cambió (Claude Code, host de `ssh`). Solo mira el proceso si cambió el
+    /// grupo. Lo llama el lector con cada salida y, tras arrancar un comando,
+    /// el hilo principal (un `ssh` o un `sleep` no escriben nada al arrancar).
+    pub fn check_foreground(&self) -> Vec<AppEvent> {
+        let fg = self.control.lock().unwrap().foreground_pgrp();
+        let mut state = self.fg_state.lock().unwrap();
+        if state.0 == fg {
+            return Vec::new();
+        }
+        state.0 = fg;
+        let mut events = Vec::new();
+        let host = fg
+            .filter(|p| *p != self.pid)
+            .and_then(crate::proc::ssh_host_of);
+        {
+            let mut slot = self.ssh_host.lock().unwrap();
+            if *slot != host {
+                *slot = host.clone();
+                events.push(AppEvent::Ssh(host));
+            }
+        }
+        let claude = fg.is_some_and(|p| p != self.pid && crate::proc::is_claude(p));
+        if claude != state.1 {
+            state.1 = claude;
+            events.push(AppEvent::Claude(claude));
+        }
+        events
+    }
+
+    /// Como [`Session::check_foreground`], dejando los avisos en la cola de eventos.
+    pub fn recheck_foreground(&self) {
+        let events = self.check_foreground();
+        if !events.is_empty() {
+            self.pending.lock().unwrap().extend(events);
+        }
+    }
+
+    /// El host del `ssh` que hay ahora en primer plano de este panel.
+    pub fn ssh_host(&self) -> Option<String> {
+        self.ssh_host.lock().unwrap().clone()
     }
 
     /// Escribe en la PTY (teclas, pegado o respuestas a consultas).
@@ -256,10 +307,6 @@ fn start_reader(session: Arc<Session>, mut reader: PtyReader, mut child: Child, 
         .name(format!("pty-reader-{}", session.id))
         .spawn(move || {
             let mut buf = vec![0u8; 64 * 1024];
-            // Primer plano de la PTY: solo se mira el proceso si cambia el
-            // grupo, y solo se avisa si cambia que sea Claude Code.
-            let mut last_fg: Option<u32> = None;
-            let mut claude_fg = false;
             loop {
                 let n = match reader.read(&mut buf) {
                     Ok(0) | Err(_) => break,
@@ -289,14 +336,7 @@ fn start_reader(session: Arc<Session>, mut reader: PtyReader, mut child: Child, 
                 if busy != session.busy.swap(busy, SeqCst) {
                     events.push(AppEvent::Busy(busy));
                 }
-                if fg != last_fg {
-                    last_fg = fg;
-                    let claude = fg.is_some_and(|p| p != session.pid && crate::proc::is_claude(p));
-                    if claude != claude_fg {
-                        claude_fg = claude;
-                        events.push(AppEvent::Claude(claude));
-                    }
-                }
+                events.extend(session.check_foreground());
                 if !events.is_empty() {
                     session.pending.lock().unwrap().extend(events);
                     waker.on_main_thread(sel!(sessionEvents));
