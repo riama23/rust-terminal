@@ -10,15 +10,14 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, Sel};
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSBezierPath, NSButton,
-    NSColor, NSCompositingOperation, NSEvent, NSFont, NSFontAttributeName,
-    NSForegroundColorAttributeName, NSLineBreakMode, NSMutableParagraphStyle,
-    NSParagraphStyleAttributeName, NSRectFill, NSRectFillUsingOperation, NSResponder,
-    NSStringDrawing, NSTextField, NSView,
+    NSAppearanceCustomization, NSBezierPath, NSButton, NSColor, NSCompositingOperation, NSEvent,
+    NSFont, NSFontAttributeName, NSForegroundColorAttributeName, NSLineBreakMode,
+    NSMutableParagraphStyle, NSParagraphStyleAttributeName, NSRectFill, NSRectFillUsingOperation,
+    NSResponder, NSStringDrawing, NSTextField, NSView,
 };
 use objc2_foundation::{MainThreadMarker, NSDictionary, NSPoint, NSRect, NSSize, NSString};
 
-use crate::palette::dusk;
+use crate::palette::tok;
 
 pub const SIDEBAR_WIDTH: f64 = 264.0;
 pub const ATTENTION_BAR_HEIGHT: f64 = 88.0;
@@ -157,10 +156,10 @@ define_class!(
         #[unsafe(method(drawRect:))]
         fn draw_rect(&self, _rect: NSRect) {
             let b = self.bounds();
-            ns_color(dusk::SIDEBAR, 1.0).setFill();
+            ns_color(tok::sidebar(), 1.0).setFill();
             NSRectFill(b);
             // Borde derecho.
-            ns_color(dusk::LINE, 1.0).setFill();
+            ns_color(tok::line(), 1.0).setFill();
             NSRectFill(NSRect::new(
                 NSPoint::new(b.size.width - 1.0, 0.0),
                 NSSize::new(1.0, b.size.height),
@@ -170,7 +169,7 @@ define_class!(
                 NSRect::new(NSPoint::new(16.0, 14.0), NSSize::new(b.size.width - 32.0, 16.0)),
                 11.0,
                 0.6,
-                dusk::MUTED,
+                tok::muted(),
             );
             for (i, row) in self.ivars().rows.borrow().iter().enumerate() {
                 let y = HEADER_H + i as f64 * (ROW_H + ROW_GAP);
@@ -179,11 +178,11 @@ define_class!(
                     NSSize::new(b.size.width - 17.0, ROW_H),
                 );
                 if row.selected {
-                    fill_rounded(r, 10.0, dusk::ACCENT, 0.07);
-                    stroke_rounded(r, 10.0, dusk::ACCENT, 0.5, 1.0);
+                    fill_rounded(r, 10.0, tok::accent(), 0.07);
+                    stroke_rounded(r, 10.0, tok::accent(), 0.5, 1.0);
                 }
                 if row.ring {
-                    stroke_rounded(r, 10.0, dusk::ATTENTION, 0.9, 1.5);
+                    stroke_rounded(r, 10.0, tok::attention(), 0.9, 1.5);
                 }
                 // Icono de estado (siempre con texto al lado: nunca solo color).
                 draw_text(
@@ -200,14 +199,14 @@ define_class!(
                     NSRect::new(NSPoint::new(text_x, y + 10.0), NSSize::new(text_w, 18.0)),
                     13.0,
                     0.4,
-                    dusk::TEXT,
+                    tok::text(),
                 );
                 draw_text(
                     &row.detail,
                     NSRect::new(NSPoint::new(text_x, y + 31.0), NSSize::new(text_w, 16.0)),
                     11.0,
                     0.0,
-                    if row.ring { dusk::ATTENTION } else { dusk::MUTED },
+                    if row.ring { tok::attention() } else { tok::muted() },
                 );
             }
         }
@@ -277,13 +276,13 @@ define_class!(
         #[unsafe(method(drawRect:))]
         fn draw_rect(&self, _rect: NSRect) {
             let b = self.bounds();
-            ns_color(dusk::BG, 1.0).setFill();
+            ns_color(tok::bg(), 1.0).setFill();
             NSRectFill(b);
             // attention al 8 % y borde superior al 45 %. `NSRectFill` copia en
             // vez de mezclar: con colores translúcidos hay que usar SourceOver.
-            ns_color(dusk::ATTENTION, 0.08).setFill();
+            ns_color(tok::attention(), 0.08).setFill();
             NSRectFillUsingOperation(b, NSCompositingOperation::SourceOver);
-            ns_color(dusk::ATTENTION, 0.45).setFill();
+            ns_color(tok::attention(), 0.45).setFill();
             NSRectFillUsingOperation(
                 NSRect::new(
                     NSPoint::new(0.0, b.size.height - 1.0),
@@ -324,7 +323,7 @@ impl AttentionBar {
         };
         let label = NSTextField::labelWithString(&NSString::from_str(""), mtm);
         label.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
-        label.setTextColor(Some(&ns_color(dusk::TEXT, 1.0)));
+        label.setTextColor(Some(&ns_color(tok::text(), 1.0)));
         label.setFont(Some(&NSFont::systemFontOfSize(13.0)));
         let ivars = BarIvars {
             label,
@@ -336,9 +335,7 @@ impl AttentionBar {
         // SAFETY: inicializador designado de NSView.
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
         // La interfaz es oscura (Dusk): los botones también.
-        // SAFETY: constante de AppKit.
-        let dark = NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua });
-        this.setAppearance(dark.as_deref());
+        this.setAppearance(crate::palette::ui_appearance().as_deref());
         let iv = this.ivars();
         this.addSubview(&iv.label);
         this.addSubview(&iv.allow);
@@ -358,6 +355,9 @@ impl AttentionBar {
         self.ivars()
             .label
             .setStringValue(&NSString::from_str(&text));
+        self.ivars()
+            .label
+            .setTextColor(Some(&ns_color(tok::text(), 1.0)));
         self.ivars().always.setEnabled(can_always);
     }
 
@@ -409,11 +409,11 @@ define_class!(
         #[unsafe(method(drawRect:))]
         fn draw_rect(&self, _rect: NSRect) {
             let b = self.bounds();
-            ns_color(dusk::BG, 1.0).setFill();
+            ns_color(tok::bg(), 1.0).setFill();
             NSRectFill(b);
-            ns_color(dusk::OK, 0.08).setFill();
+            ns_color(tok::ok(), 0.08).setFill();
             NSRectFillUsingOperation(b, NSCompositingOperation::SourceOver);
-            ns_color(dusk::OK, 0.45).setFill();
+            ns_color(tok::ok(), 0.45).setFill();
             NSRectFillUsingOperation(
                 NSRect::new(NSPoint::new(0.0, b.size.height - 1.0), NSSize::new(b.size.width, 1.0)),
                 NSCompositingOperation::SourceOver,
@@ -448,7 +448,7 @@ impl DoneBar {
         let pr_button = make("Abrir PR\u{2026}", pr);
         let label = NSTextField::labelWithString(&NSString::from_str(""), mtm);
         label.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
-        label.setTextColor(Some(&ns_color(dusk::TEXT, 1.0)));
+        label.setTextColor(Some(&ns_color(tok::text(), 1.0)));
         label.setFont(Some(&NSFont::systemFontOfSize(13.0)));
         let this = Self::alloc(mtm).set_ivars(DoneIvars {
             label,
@@ -457,9 +457,7 @@ impl DoneBar {
         });
         // SAFETY: inicializador designado de NSView.
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
-        // SAFETY: constante de AppKit.
-        let dark = NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua });
-        this.setAppearance(dark.as_deref());
+        this.setAppearance(crate::palette::ui_appearance().as_deref());
         this.addSubview(&this.ivars().label);
         this.addSubview(&this.ivars().review);
         this.addSubview(&this.ivars().pr);
@@ -468,6 +466,9 @@ impl DoneBar {
 
     pub fn set_summary(&self, text: &str) {
         self.ivars().label.setStringValue(&NSString::from_str(text));
+        self.ivars()
+            .label
+            .setTextColor(Some(&ns_color(tok::text(), 1.0)));
         self.relayout();
     }
 
@@ -562,9 +563,9 @@ define_class!(
         #[unsafe(method(drawRect:))]
         fn draw_rect(&self, _rect: NSRect) {
             let b = self.bounds();
-            ns_color(dusk::SIDEBAR, 1.0).setFill();
+            ns_color(tok::sidebar(), 1.0).setFill();
             NSRectFill(b);
-            ns_color(dusk::LINE, 1.0).setFill();
+            ns_color(tok::line(), 1.0).setFill();
             NSRectFill(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1.0, b.size.height)));
             let d = self.ivars().data.borrow();
             let w = b.size.width - 32.0;
@@ -572,20 +573,20 @@ define_class!(
             let rect = |y: f64, h: f64| NSRect::new(NSPoint::new(16.0, y), NSSize::new(w, h));
 
             let heading = |text: &str, y: &mut f64| {
-                draw_text(text, rect(*y, 16.0), 11.0, 0.6, dusk::MUTED);
+                draw_text(text, rect(*y, 16.0), 11.0, 0.6, tok::muted());
                 *y += 22.0;
             };
 
             heading("PLAN", &mut y);
             if d.todos.is_empty() {
-                draw_text("Sin plan todavía.", rect(y, 18.0), 12.0, 0.0, dusk::MUTED);
+                draw_text("Sin plan todavía.", rect(y, 18.0), 12.0, 0.0, tok::muted());
                 y += 24.0;
             }
             for todo in d.todos.iter().take(12) {
                 let color = match todo.status {
-                    crate::agent::model::TodoStatus::Done => dusk::OK,
-                    crate::agent::model::TodoStatus::InProgress => dusk::ACCENT,
-                    crate::agent::model::TodoStatus::Pending => dusk::MUTED,
+                    crate::agent::model::TodoStatus::Done => tok::ok(),
+                    crate::agent::model::TodoStatus::InProgress => tok::accent(),
+                    crate::agent::model::TodoStatus::Pending => tok::muted(),
                 };
                 draw_text(todo.status.icon(), NSRect::new(NSPoint::new(16.0, y), NSSize::new(16.0, 18.0)), 12.0, 0.5, color);
                 draw_text(
@@ -593,7 +594,7 @@ define_class!(
                     NSRect::new(NSPoint::new(36.0, y), NSSize::new(w - 20.0, 18.0)),
                     12.0,
                     0.0,
-                    dusk::TEXT,
+                    tok::text(),
                 );
                 y += 22.0;
             }
@@ -602,20 +603,20 @@ define_class!(
             heading("CAMBIOS", &mut y);
             match &d.changes {
                 None => {
-                    draw_text("Calculando…", rect(y, 18.0), 12.0, 0.0, dusk::MUTED);
+                    draw_text("Calculando…", rect(y, 18.0), 12.0, 0.0, tok::muted());
                     y += 24.0;
                 }
                 Some(rows) if rows.is_empty() => {
-                    draw_text("Sin cambios.", rect(y, 18.0), 12.0, 0.0, dusk::MUTED);
+                    draw_text("Sin cambios.", rect(y, 18.0), 12.0, 0.0, tok::muted());
                     y += 24.0;
                 }
                 Some(rows) => {
                     for row in rows.iter().take(10) {
                         let color = match row.tag {
-                            "A" => dusk::OK,
-                            "D" => dusk::ERROR,
-                            "R" => dusk::ACCENT,
-                            _ => dusk::WARN,
+                            "A" => tok::ok(),
+                            "D" => tok::error(),
+                            "R" => tok::accent(),
+                            _ => tok::warn(),
                         };
                         draw_text_ex(row.tag, NSRect::new(NSPoint::new(16.0, y), NSSize::new(14.0, 18.0)), 12.0, 0.6, color, true, false);
                         draw_text(
@@ -623,21 +624,21 @@ define_class!(
                             NSRect::new(NSPoint::new(34.0, y), NSSize::new(w - 34.0 - 78.0, 18.0)),
                             12.0,
                             0.0,
-                            dusk::TEXT,
+                            tok::text(),
                         );
                         draw_text_ex(
                             &format!("+{} −{}", row.added, row.removed),
                             NSRect::new(NSPoint::new(16.0 + w - 76.0, y), NSSize::new(76.0, 18.0)),
                             11.0,
                             0.0,
-                            dusk::MUTED,
+                            tok::muted(),
                             true,
                             true,
                         );
                         y += 22.0;
                     }
                     if rows.len() > 10 {
-                        draw_text(&format!("… y {} más", rows.len() - 10), rect(y, 16.0), 11.0, 0.0, dusk::MUTED);
+                        draw_text(&format!("… y {} más", rows.len() - 10), rect(y, 16.0), 11.0, 0.0, tok::muted());
                         y += 22.0;
                     }
                 }
@@ -647,21 +648,21 @@ define_class!(
             heading("CONTEXTO", &mut y);
             match d.context_percent {
                 None => {
-                    draw_text("Sin datos todavía.", rect(y, 18.0), 12.0, 0.0, dusk::MUTED);
+                    draw_text("Sin datos todavía.", rect(y, 18.0), 12.0, 0.0, tok::muted());
                     y += 24.0;
                 }
                 Some(p) => {
                     let warn = p > CONTEXT_WARN;
-                    let color = if warn { dusk::ATTENTION } else { dusk::ACCENT };
+                    let color = if warn { tok::attention() } else { tok::accent() };
                     let track = NSRect::new(NSPoint::new(16.0, y + 2.0), NSSize::new(w, 6.0));
-                    fill_rounded(track, 3.0, dusk::LINE_STRONG, 1.0);
+                    fill_rounded(track, 3.0, tok::line_strong(), 1.0);
                     let filled = NSRect::new(track.origin, NSSize::new(w * (p.clamp(0.0, 100.0) / 100.0), 6.0));
                     fill_rounded(filled, 3.0, color, 1.0);
                     y += 16.0;
-                    draw_text(&format!("{p:.0} % usado"), rect(y, 16.0), 12.0, 0.0, if warn { dusk::ATTENTION } else { dusk::TEXT });
+                    draw_text(&format!("{p:.0} % usado"), rect(y, 16.0), 12.0, 0.0, if warn { tok::attention() } else { tok::text() });
                     y += 20.0;
                     if warn {
-                        draw_text("Conviene compactar la conversación.", rect(y, 16.0), 11.0, 0.0, dusk::ATTENTION);
+                        draw_text("Conviene compactar la conversación.", rect(y, 16.0), 11.0, 0.0, tok::attention());
                         y += 20.0;
                     }
                 }
@@ -669,10 +670,10 @@ define_class!(
             y += 14.0;
 
             heading("WORKTREE", &mut y);
-            draw_text(&d.worktree, rect(y, 16.0), 11.0, 0.0, dusk::MUTED);
+            draw_text(&d.worktree, rect(y, 16.0), 11.0, 0.0, tok::muted());
             y += 20.0;
             if let Some(branch) = &d.branch {
-                draw_text(&format!("Rama: {branch}"), rect(y, 16.0), 12.0, 0.0, dusk::TEXT);
+                draw_text(&format!("Rama: {branch}"), rect(y, 16.0), 12.0, 0.0, tok::text());
             }
         }
     }

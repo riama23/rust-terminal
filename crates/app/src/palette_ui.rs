@@ -10,14 +10,14 @@ use objc2::rc::Retained;
 use objc2::runtime::NSObjectProtocol;
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSCompositingOperation,
-    NSEvent, NSEventModifierFlags, NSRectFillUsingOperation, NSResponder, NSView,
+    NSAppearanceCustomization, NSCompositingOperation, NSEvent, NSEventModifierFlags,
+    NSRectFillUsingOperation, NSResponder, NSView,
 };
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
 
 use crate::agent_ui::{draw_text, draw_text_ex, fill_rounded, ns_color, stroke_rounded};
 use crate::command_palette::Scope;
-use crate::palette::dusk;
+use crate::palette::tok;
 
 pub const DIALOG_W: f64 = 640.0;
 const SEARCH_H: f64 = 56.0;
@@ -83,21 +83,21 @@ define_class!(
         fn draw_rect(&self, _rect: NSRect) {
             let b = self.bounds();
             // Velo (55 %).
-            ns_color(dusk::BG, 0.55).setFill();
+            ns_color(tok::bg(), 0.55).setFill();
             NSRectFillUsingOperation(b, NSCompositingOperation::SourceOver);
 
             let iv = self.ivars();
             let rows = iv.rows.borrow();
             let d = dialog_rect(b, rows.len());
-            fill_rounded(d, 12.0, dusk::POPOVER, 1.0);
-            stroke_rounded(d, 12.0, dusk::LINE_STRONG, 1.0, 1.0);
+            fill_rounded(d, 12.0, tok::popover(), 1.0);
+            stroke_rounded(d, 12.0, tok::line_strong(), 1.0, 1.0);
 
             // Consulta y ámbito.
             let query = iv.query.borrow();
             let (text, color) = if query.is_empty() {
-                ("Buscar acciones y comandos…".to_owned(), dusk::GHOST)
+                ("Buscar acciones y comandos…".to_owned(), tok::ghost())
             } else {
-                (format!("{query}\u{258F}"), dusk::TEXT)
+                (format!("{query}\u{258F}"), tok::text())
             };
             draw_text(
                 &text,
@@ -115,8 +115,8 @@ define_class!(
                 x -= w;
                 let chip = NSRect::new(NSPoint::new(x, d.origin.y + 17.0), NSSize::new(w, 22.0));
                 if scope == iv.scope.get() {
-                    fill_rounded(chip, 11.0, dusk::ACCENT, 0.18);
-                    stroke_rounded(chip, 11.0, dusk::ACCENT, 0.6, 1.0);
+                    fill_rounded(chip, 11.0, tok::accent(), 0.18);
+                    stroke_rounded(chip, 11.0, tok::accent(), 0.6, 1.0);
                 }
                 draw_text_ex(
                     scope.label(),
@@ -126,13 +126,13 @@ define_class!(
                     ),
                     11.0,
                     0.4,
-                    if scope == iv.scope.get() { dusk::ACCENT } else { dusk::MUTED },
+                    if scope == iv.scope.get() { tok::accent() } else { tok::muted() },
                     false,
                     false,
                 );
                 x -= 6.0;
             }
-            ns_color(dusk::LINE, 1.0).setFill();
+            ns_color(tok::line(), 1.0).setFill();
             NSRectFillUsingOperation(
                 NSRect::new(
                     NSPoint::new(d.origin.x, d.origin.y + SEARCH_H),
@@ -151,7 +151,7 @@ define_class!(
                     ),
                     13.0,
                     0.0,
-                    dusk::MUTED,
+                    tok::muted(),
                 );
             }
             for (i, row) in rows.iter().enumerate() {
@@ -161,13 +161,13 @@ define_class!(
                         NSPoint::new(d.origin.x + 8.0, y + 2.0),
                         NSSize::new(d.size.width - 16.0, ROW_H - 4.0),
                     );
-                    fill_rounded(r, 8.0, dusk::ACCENT, 0.12);
-                    stroke_rounded(r, 8.0, dusk::ACCENT, 0.45, 1.0);
+                    fill_rounded(r, 8.0, tok::accent(), 0.12);
+                    stroke_rounded(r, 8.0, tok::accent(), 0.45, 1.0);
                 }
                 let tag_color = match row.tag {
-                    "ACT" => dusk::ACCENT,
-                    "FLOW" => dusk::OK,
-                    _ => dusk::ATTENTION,
+                    "ACT" => tok::accent(),
+                    "FLOW" => tok::ok(),
+                    _ => tok::attention(),
                 };
                 draw_text_ex(
                     row.tag,
@@ -189,7 +189,7 @@ define_class!(
                     ),
                     13.0,
                     0.3,
-                    dusk::TEXT,
+                    tok::text(),
                 );
                 draw_text(
                     &row.detail,
@@ -199,13 +199,13 @@ define_class!(
                     ),
                     11.0,
                     0.0,
-                    dusk::MUTED,
+                    tok::muted(),
                 );
             }
 
             // Pie con las teclas.
             let fy = d.origin.y + d.size.height - FOOTER_H;
-            ns_color(dusk::LINE, 1.0).setFill();
+            ns_color(tok::line(), 1.0).setFill();
             NSRectFillUsingOperation(
                 NSRect::new(NSPoint::new(d.origin.x, fy), NSSize::new(d.size.width, 1.0)),
                 NSCompositingOperation::SourceOver,
@@ -218,7 +218,7 @@ define_class!(
                 ),
                 11.0,
                 0.0,
-                dusk::MUTED,
+                tok::muted(),
             );
         }
 
@@ -309,9 +309,7 @@ impl PaletteView {
         });
         // SAFETY: inicializador designado de NSView.
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
-        // SAFETY: constante de AppKit.
-        let dark = NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua });
-        this.setAppearance(dark.as_deref());
+        this.setAppearance(crate::palette::ui_appearance().as_deref());
         this
     }
 

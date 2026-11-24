@@ -5,14 +5,13 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, Sel};
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSButton,
-    NSCompositingOperation, NSFont, NSLineBreakMode, NSRectFill, NSRectFillUsingOperation,
-    NSResponder, NSTextField, NSView,
+    NSAppearanceCustomization, NSButton, NSCompositingOperation, NSFont, NSLineBreakMode,
+    NSRectFill, NSRectFillUsingOperation, NSResponder, NSTextField, NSView,
 };
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 
 use crate::agent_ui::ns_color;
-use crate::palette::dusk;
+use crate::palette::tok;
 
 pub const BLOCK_BAR_HEIGHT: f64 = 44.0;
 
@@ -65,12 +64,12 @@ define_class!(
         #[unsafe(method(drawRect:))]
         fn draw_rect(&self, _rect: NSRect) {
             let b = self.bounds();
-            ns_color(dusk::BG, 1.0).setFill();
+            ns_color(tok::bg(), 1.0).setFill();
             NSRectFill(b);
             let tint = if self.ivars().failed.get() {
-                dusk::ERROR
+                tok::error()
             } else {
-                dusk::ACCENT
+                tok::accent()
             };
             ns_color(tint, 0.08).setFill();
             NSRectFillUsingOperation(b, NSCompositingOperation::SourceOver);
@@ -105,7 +104,7 @@ impl BlockBar {
         };
         let label = NSTextField::labelWithString(&NSString::from_str(""), mtm);
         label.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
-        label.setTextColor(Some(&ns_color(dusk::TEXT, 1.0)));
+        label.setTextColor(Some(&ns_color(tok::text(), 1.0)));
         label.setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(12.0, 0.0)));
         let this = Self::alloc(mtm).set_ivars(BlockBarIvars {
             label,
@@ -119,9 +118,7 @@ impl BlockBar {
         });
         // SAFETY: inicializador designado de NSView.
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
-        // SAFETY: constante de AppKit.
-        let dark = NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua });
-        this.setAppearance(dark.as_deref());
+        this.setAppearance(crate::palette::ui_appearance().as_deref());
         let iv = this.ivars();
         for v in [
             &*iv.label as &NSView,
@@ -140,6 +137,7 @@ impl BlockBar {
     pub fn set_info(&self, info: &BlockBarInfo) {
         let iv = self.ivars();
         iv.label.setStringValue(&NSString::from_str(&info.label));
+        iv.label.setTextColor(Some(&ns_color(tok::text(), 1.0)));
         iv.failed.set(info.failed);
         iv.stop.setHidden(!info.running);
         iv.rerun.setHidden(info.running);

@@ -8,39 +8,177 @@ use crate::config::Theme;
 /// RGBA en `[0, 1]`.
 pub type Rgba = [f32; 4];
 
-/// Marca de bloque en el margen: comando terminado bien (o aún en curso).
-pub const MARK_OK: [u8; 3] = [0x5a, 0x5a, 0x60];
-/// Marca de bloque en el margen: comando con código de salida distinto de 0.
-pub const MARK_FAILED: [u8; 3] = [0xe0, 0x4f, 0x4f];
-/// Divisores entre paneles y separadores de pestañas.
-pub const DIVIDER: [u8; 3] = [0x3a, 0x3a, 0x40];
-/// Fondo de la barra de pestañas y de las pestañas inactivas.
-pub const TAB_BAR: [u8; 3] = [0x12, 0x12, 0x14];
-pub const TAB_INACTIVE_FG: [u8; 3] = [0x90, 0x90, 0x98];
-/// Línea de la pestaña activa y subrayado de enlaces.
-pub const ACCENT: [u8; 3] = [0x3b, 0x8e, 0xea];
+use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Tokens de color del spec de producto, tema Dusk. Los nombres son los del
-/// spec. Los usan las vistas AppKit (sidebar, attention bar…); los colores de
-/// arriba son los de la cuadrícula y las pestañas dibujadas con Metal.
+use objc2::rc::Retained;
+use objc2_app_kit::{NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua};
+
+/// ¿Está activo el tema claro (Paper)? Lo cambia la vista al aplicar la
+/// configuración; lo leen las vistas AppKit y el hilo de render.
+static PAPER: AtomicBool = AtomicBool::new(false);
+
+pub fn set_paper(on: bool) {
+    PAPER.store(on, Ordering::Relaxed);
+}
+
+pub fn is_paper() -> bool {
+    PAPER.load(Ordering::Relaxed)
+}
+
+/// La apariencia de AppKit que va con el tema (para los controles nativos).
+pub fn ui_appearance() -> Option<Retained<NSAppearance>> {
+    // SAFETY: constantes de AppKit.
+    NSAppearance::appearanceNamed(unsafe {
+        if is_paper() {
+            NSAppearanceNameAqua
+        } else {
+            NSAppearanceNameDarkAqua
+        }
+    })
+}
+
+/// Tokens de color del spec de producto, uno por tema. Los nombres son los
+/// del spec. Los de Paper `sidebar`, `attention` y `prod` son propuestas del
+/// spec (las pantallas de agentes se dibujaron solo en Dusk).
 #[allow(dead_code)] // los tokens que aún no usa ninguna vista llegan con las pantallas del spec
-pub mod dusk {
-    pub const BG: [u8; 3] = [0x13, 0x14, 0x17];
-    pub const CHROME: [u8; 3] = [0x1b, 0x1c, 0x20];
-    pub const SIDEBAR: [u8; 3] = [0x17, 0x18, 0x1c];
-    pub const SURFACE: [u8; 3] = [0x1c, 0x1e, 0x23];
-    pub const POPOVER: [u8; 3] = [0x20, 0x22, 0x28];
-    pub const LINE: [u8; 3] = [0x2b, 0x2e, 0x35];
-    pub const LINE_STRONG: [u8; 3] = [0x3a, 0x3e, 0x47];
-    pub const TEXT: [u8; 3] = [0xe8, 0xe8, 0xea];
-    pub const MUTED: [u8; 3] = [0xa0, 0xa4, 0xad];
-    pub const GHOST: [u8; 3] = [0x6f, 0x74, 0x80];
-    pub const ACCENT: [u8; 3] = [0x7a, 0xa2, 0xff];
-    pub const OK: [u8; 3] = [0x5f, 0xd3, 0x8d];
-    pub const ERROR: [u8; 3] = [0xff, 0x7b, 0x72];
-    pub const ATTENTION: [u8; 3] = [0xf0, 0xb4, 0x5a];
-    pub const WARN: [u8; 3] = [0xe6, 0xc0, 0x7b];
-    pub const PROD: [u8; 3] = [0xff, 0xb2, 0x7a];
+pub struct Tokens {
+    pub bg: [u8; 3],
+    pub chrome: [u8; 3],
+    pub sidebar: [u8; 3],
+    pub surface: [u8; 3],
+    pub popover: [u8; 3],
+    pub line: [u8; 3],
+    pub line_strong: [u8; 3],
+    pub text: [u8; 3],
+    pub muted: [u8; 3],
+    pub ghost: [u8; 3],
+    pub accent: [u8; 3],
+    pub ok: [u8; 3],
+    pub error: [u8; 3],
+    pub attention: [u8; 3],
+    pub warn: [u8; 3],
+    pub prod: [u8; 3],
+}
+
+pub const DUSK: Tokens = Tokens {
+    bg: [0x13, 0x14, 0x17],
+    chrome: [0x1b, 0x1c, 0x20],
+    sidebar: [0x17, 0x18, 0x1c],
+    surface: [0x1c, 0x1e, 0x23],
+    popover: [0x20, 0x22, 0x28],
+    line: [0x2b, 0x2e, 0x35],
+    line_strong: [0x3a, 0x3e, 0x47],
+    text: [0xe8, 0xe8, 0xea],
+    muted: [0xa0, 0xa4, 0xad],
+    ghost: [0x6f, 0x74, 0x80],
+    accent: [0x7a, 0xa2, 0xff],
+    ok: [0x5f, 0xd3, 0x8d],
+    error: [0xff, 0x7b, 0x72],
+    attention: [0xf0, 0xb4, 0x5a],
+    warn: [0xe6, 0xc0, 0x7b],
+    prod: [0xff, 0xb2, 0x7a],
+};
+
+pub const PAPER_TOKENS: Tokens = Tokens {
+    bg: [0xfb, 0xfb, 0xfa],
+    chrome: [0xef, 0xef, 0xed],
+    sidebar: [0xf4, 0xf4, 0xf2],
+    surface: [0xff, 0xff, 0xff],
+    popover: [0xff, 0xff, 0xff],
+    line: [0xe1, 0xe2, 0xe5],
+    line_strong: [0xcf, 0xd2, 0xd8],
+    text: [0x1c, 0x1d, 0x21],
+    muted: [0x55, 0x5a, 0x63],
+    ghost: [0x9a, 0x9e, 0xa6],
+    accent: [0x2f, 0x5f, 0xd0],
+    // `ok` y `attention` son más oscuros que los del spec (#1F8A4C, #A86400):
+    // con ellos el texto no llega a 4,5:1 sobre el fondo y la barra lateral.
+    ok: [0x1b, 0x7f, 0x45],
+    error: [0xc8, 0x37, 0x2d],
+    attention: [0x9a, 0x5a, 0x00],
+    warn: [0x8a, 0x61, 0x00],
+    prod: [0xa1, 0x4a, 0x00],
+};
+
+/// Los tokens del tema activo.
+pub fn tokens() -> &'static Tokens {
+    if is_paper() { &PAPER_TOKENS } else { &DUSK }
+}
+
+/// Los tokens por nombre, como funciones: `tok::bg()`, `tok::text()`…
+#[allow(dead_code)]
+pub mod tok {
+    macro_rules! token_fns {
+        ($($name:ident),*) => {
+            $(pub fn $name() -> [u8; 3] { super::tokens().$name })*
+        };
+    }
+    token_fns!(
+        bg,
+        chrome,
+        sidebar,
+        surface,
+        popover,
+        line,
+        line_strong,
+        text,
+        muted,
+        ghost,
+        accent,
+        ok,
+        error,
+        attention,
+        warn,
+        prod
+    );
+}
+
+/// Marca de bloque en el margen: comando terminado bien (o aún en curso).
+pub fn mark_ok() -> [u8; 3] {
+    if is_paper() {
+        [0xa8, 0xad, 0xb5]
+    } else {
+        [0x5a, 0x5a, 0x60]
+    }
+}
+/// Marca de bloque en el margen: comando con código de salida distinto de 0.
+pub fn mark_failed() -> [u8; 3] {
+    if is_paper() {
+        PAPER_TOKENS.error
+    } else {
+        [0xe0, 0x4f, 0x4f]
+    }
+}
+/// Divisores entre paneles y separadores de pestañas.
+pub fn divider() -> [u8; 3] {
+    if is_paper() {
+        PAPER_TOKENS.line_strong
+    } else {
+        [0x3a, 0x3a, 0x40]
+    }
+}
+/// Fondo de la barra de pestañas y de las pestañas inactivas.
+pub fn tab_bar() -> [u8; 3] {
+    if is_paper() {
+        PAPER_TOKENS.chrome
+    } else {
+        [0x12, 0x12, 0x14]
+    }
+}
+pub fn tab_inactive_fg() -> [u8; 3] {
+    if is_paper() {
+        PAPER_TOKENS.muted
+    } else {
+        [0x90, 0x90, 0x98]
+    }
+}
+/// Línea de la pestaña activa y subrayado de enlaces.
+pub fn accent() -> [u8; 3] {
+    if is_paper() {
+        PAPER_TOKENS.accent
+    } else {
+        [0x3b, 0x8e, 0xea]
+    }
 }
 
 /// Color de la paleta de 256: los 16 del tema, cubo 6×6×6 y 24 grises.
@@ -94,8 +232,8 @@ mod tests {
 }
 
 #[cfg(test)]
-mod dusk_tests {
-    use super::dusk;
+mod token_tests {
+    use super::{DUSK, PAPER_TOKENS, Tokens};
 
     /// Luminancia relativa (WCAG).
     fn lum(c: [u8; 3]) -> f64 {
@@ -115,21 +253,34 @@ mod dusk_tests {
         (x.max(y) + 0.05) / (x.min(y) + 0.05)
     }
 
-    /// El spec exige 4,5:1 para el texto sobre su fondo.
-    #[test]
-    fn el_texto_de_dusk_cumple_el_contraste_del_spec() {
-        for (name, fg, bg) in [
-            ("text/bg", dusk::TEXT, dusk::BG),
-            ("text/sidebar", dusk::TEXT, dusk::SIDEBAR),
-            ("muted/sidebar", dusk::MUTED, dusk::SIDEBAR),
-            ("muted/bg", dusk::MUTED, dusk::BG),
-            ("attention/sidebar", dusk::ATTENTION, dusk::SIDEBAR),
-            ("accent/sidebar", dusk::ACCENT, dusk::SIDEBAR),
-            ("ok/sidebar", dusk::OK, dusk::SIDEBAR),
-            ("error/sidebar", dusk::ERROR, dusk::SIDEBAR),
+    fn check(name: &str, t: &Tokens) {
+        for (what, fg, bg) in [
+            ("text/bg", t.text, t.bg),
+            ("text/sidebar", t.text, t.sidebar),
+            ("muted/sidebar", t.muted, t.sidebar),
+            ("muted/bg", t.muted, t.bg),
+            ("attention/sidebar", t.attention, t.sidebar),
+            ("accent/sidebar", t.accent, t.sidebar),
+            ("ok/sidebar", t.ok, t.sidebar),
+            ("error/sidebar", t.error, t.sidebar),
+            ("accent/popover", t.accent, t.popover),
+            ("text/popover", t.text, t.popover),
         ] {
             let c = contrast(fg, bg);
-            assert!(c >= 4.5, "{name}: {c:.2}:1");
+            assert!(c >= 4.5, "{name} {what}: {c:.2}:1");
         }
+    }
+
+    /// El spec exige 4,5:1 para el texto sobre su fondo, en los dos temas.
+    #[test]
+    fn el_texto_cumple_el_contraste_del_spec_en_dusk_y_en_paper() {
+        check("dusk", &DUSK);
+        check("paper", &PAPER_TOKENS);
+    }
+
+    #[test]
+    fn paper_es_claro_y_dusk_es_oscuro() {
+        assert!(lum(PAPER_TOKENS.bg) > 0.9);
+        assert!(lum(DUSK.bg) < 0.05);
     }
 }

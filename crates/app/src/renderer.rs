@@ -510,7 +510,7 @@ impl Renderer {
         }
         for d in &frame.dividers {
             self.quads
-                .push(fill(*d, palette::to_rgba(palette::DIVIDER, 1.0)));
+                .push(fill(*d, palette::to_rgba(palette::divider(), 1.0)));
         }
         for h in &frame.headers {
             self.build_pane_header(h, &mut glyphs);
@@ -572,21 +572,21 @@ impl Renderer {
         let (cw, ch) = (m.cell_w as f32, m.cell_h as f32);
         let [x, y, w, h] = header.rect;
         self.quads
-            .push(fill(header.rect, palette::to_rgba(palette::TAB_BAR, 1.0)));
+            .push(fill(header.rect, palette::to_rgba(palette::tab_bar(), 1.0)));
         // Línea inferior, y el acento en el panel con el foco.
         self.quads.push(fill(
             [x, y + h - 1.0, w, 1.0],
-            palette::to_rgba(palette::DIVIDER, 1.0),
+            palette::to_rgba(palette::divider(), 1.0),
         ));
         let fg = if header.focused {
             let accent_h = (ch / 12.0).round().max(2.0);
             self.quads.push(fill(
                 [x, y, w, accent_h],
-                palette::to_rgba(palette::ACCENT, 1.0),
+                palette::to_rgba(palette::accent(), 1.0),
             ));
             self.theme.foreground
         } else {
-            palette::TAB_INACTIVE_FG
+            palette::tab_inactive_fg()
         };
         self.push_text(
             &header.title,
@@ -603,26 +603,26 @@ impl Renderer {
         let ch = m.cell_h as f32;
         let cw = m.cell_w as f32;
         self.quads
-            .push(fill(bar.rect, palette::to_rgba(palette::TAB_BAR, 1.0)));
+            .push(fill(bar.rect, palette::to_rgba(palette::tab_bar(), 1.0)));
         for tab in &bar.tabs {
             let [x, y, w, h] = tab.rect;
             let (bg, fg) = if tab.active {
                 (self.theme.background, self.theme.foreground)
             } else {
-                (palette::TAB_BAR, palette::TAB_INACTIVE_FG)
+                (palette::tab_bar(), palette::tab_inactive_fg())
             };
             self.quads.push(fill(tab.rect, palette::to_rgba(bg, 1.0)));
             if tab.active {
                 let accent_h = (ch / 12.0).round().max(2.0);
                 self.quads.push(fill(
                     [x, y, w, accent_h],
-                    palette::to_rgba(palette::ACCENT, 1.0),
+                    palette::to_rgba(palette::accent(), 1.0),
                 ));
             }
             // Separador a la derecha de cada pestaña.
             self.quads.push(fill(
                 [x + w - 1.0, y + h * 0.2, 1.0, h * 0.6],
-                palette::to_rgba(palette::DIVIDER, 1.0),
+                palette::to_rgba(palette::divider(), 1.0),
             ));
             let text_y = y + ((h - ch) / 2.0).round();
             let mut text_x = x + cw;
@@ -633,7 +633,7 @@ impl Renderer {
                     text_x,
                     text_y,
                     cw * 2.0,
-                    palette::to_rgba(palette::ACCENT, 1.0),
+                    palette::to_rgba(palette::accent(), 1.0),
                     glyphs,
                 );
                 text_x += cw * 2.0;
@@ -653,7 +653,7 @@ impl Renderer {
                 cx + ((cwid - cw) / 2.0).round(),
                 cy + ((chei - ch) / 2.0).round(),
                 cw,
-                palette::to_rgba(palette::TAB_INACTIVE_FG, 1.0),
+                palette::to_rgba(palette::tab_inactive_fg(), 1.0),
                 glyphs,
             );
         }
@@ -663,7 +663,7 @@ impl Renderer {
             px + ((pw - cw) / 2.0).round(),
             py + ((ph - ch) / 2.0).round(),
             cw,
-            palette::to_rgba(palette::TAB_INACTIVE_FG, 1.0),
+            palette::to_rgba(palette::tab_inactive_fg(), 1.0),
             glyphs,
         );
     }
@@ -685,9 +685,9 @@ impl Renderer {
         for &(r, failed) in overlay.marks.iter() {
             let Some(sr) = map.screen_of(r) else { continue };
             let color = if failed {
-                palette::MARK_FAILED
+                palette::mark_failed()
             } else {
-                palette::MARK_OK
+                palette::mark_ok()
             };
             let y = oy + sr as f32 * ch;
             self.quads.push(fill(
@@ -703,7 +703,7 @@ impl Renderer {
             let y = oy + sr as f32 * ch + (m.baseline as f32 + stroke).min(ch - stroke);
             glyphs.push(fill(
                 [ox + a as f32 * cw, y, (b + 1 - a) as f32 * cw, stroke],
-                palette::to_rgba(palette::ACCENT, 1.0),
+                palette::to_rgba(palette::accent(), 1.0),
             ));
         }
 
@@ -717,14 +717,14 @@ impl Renderer {
             if let Some(&(_, hidden)) = map.summaries.iter().find(|(vr, _)| *vr == r) {
                 self.quads.push(fill(
                     [pane.rect[0], y, pane.rect[2], ch],
-                    palette::to_rgba(palette::TAB_BAR, 1.0),
+                    palette::to_rgba(palette::tab_bar(), 1.0),
                 ));
                 self.push_text(
                     &format!("▸ salida colapsada · {hidden} líneas ocultas"),
                     ox,
                     y,
                     pane.rect[2] - 2.0 * pad,
-                    palette::to_rgba(palette::TAB_INACTIVE_FG, 1.0),
+                    palette::to_rgba(palette::tab_inactive_fg(), 1.0),
                     glyphs,
                 );
                 continue;
@@ -829,19 +829,19 @@ impl Renderer {
                 self.quads.push(fill(
                     rect,
                     palette::to_rgba(
-                        palette::MARK_FAILED,
+                        palette::mark_failed(),
                         if span.selected { 0.16 } else { 0.09 },
                     ),
                 ));
             } else if span.selected {
                 self.quads
-                    .push(fill(rect, palette::to_rgba(palette::ACCENT, 0.12)));
+                    .push(fill(rect, palette::to_rgba(palette::accent(), 0.12)));
             }
             if span.selected {
                 let bar = (pad * 0.5).round().max(3.0);
                 self.quads.push(fill(
                     [pane.rect[0], y, bar, h],
-                    palette::to_rgba(palette::ACCENT, 1.0),
+                    palette::to_rgba(palette::accent(), 1.0),
                 ));
             }
         }
@@ -891,7 +891,7 @@ impl Renderer {
         let stroke = m.stroke as f32;
         glyphs.push(fill(
             [start, y + ch - stroke, x - start, stroke],
-            palette::to_rgba(palette::ACCENT, 1.0),
+            palette::to_rgba(palette::accent(), 1.0),
         ));
     }
 }
@@ -1166,13 +1166,13 @@ mod tests {
         let has_text = |row: u32| {
             cell_pixels(layout, m, &pixels, row, 0)
                 .iter()
-                .any(|p| *p != bg && *p != bgra(palette::TAB_BAR))
+                .any(|p| *p != bg && *p != bgra(palette::tab_bar()))
         };
         assert!(has_text(0), "AAAA se queda");
         // Fila 1: el resumen (fondo propio), no BBBB.
         assert_eq!(
             cell_pixels(layout, m, &pixels, 1, 0)[0],
-            bgra(palette::TAB_BAR)
+            bgra(palette::tab_bar())
         );
         // DDDD (fila 3 de la vista) sube a la fila 2 de pantalla; la 3 queda vacía.
         assert!(has_text(2), "DDDD sube");
@@ -1206,7 +1206,7 @@ mod tests {
         // La marca roja está en el margen izquierdo de la fila 1.
         let stride = layout.width_px as usize * 4;
         let y = (layout.pad_px + m.cell_h + m.cell_h / 2) as usize;
-        let red = bgra(palette::MARK_FAILED);
+        let red = bgra(palette::mark_failed());
         let margin: Vec<[u8; 4]> = (0..layout.pad_px as usize)
             .map(|x| {
                 let i = y * stride + x * 4;
@@ -1215,7 +1215,7 @@ mod tests {
             .collect();
         assert!(margin.contains(&red), "no hay marca roja en el margen");
         // El enlace de la fila 1 está subrayado con el color de acento.
-        let accent = bgra(palette::ACCENT);
+        let accent = bgra(palette::accent());
         assert!(cell_pixels(layout, m, &pixels, 1, 2).contains(&accent));
         assert!(!cell_pixels(layout, m, &pixels, 1, 1).contains(&accent));
     }

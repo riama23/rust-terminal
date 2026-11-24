@@ -8,14 +8,13 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, Sel};
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSButton, NSControl,
-    NSControlStateValueOn, NSEvent, NSFont, NSPopUpButton, NSRectFill, NSResponder, NSScrollView,
-    NSTextField, NSView,
+    NSAppearanceCustomization, NSButton, NSControl, NSControlStateValueOn, NSEvent, NSFont,
+    NSPopUpButton, NSRectFill, NSResponder, NSScrollView, NSTextField, NSView,
 };
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 
 use crate::agent_ui::{draw_text, fill_rounded, ns_color};
-use crate::palette::dusk;
+use crate::palette::tok;
 
 pub const WINDOW_W: f64 = 960.0;
 pub const WINDOW_H: f64 = 680.0;
@@ -30,7 +29,7 @@ pub const PAGES: &[(&str, &[&str])] = &[
         "General",
         &["shell", "scrollback", "clipboard", "notifications", "bell"],
     ),
-    ("Apariencia", &["font", "colors", "window"]),
+    ("Apariencia", &["appearance", "font", "colors", "window"]),
     ("Teclado", &["keybindings"]),
     ("Bloques y agentes", &["blocks", "agents"]),
 ];
@@ -95,7 +94,7 @@ define_class!(
 
         #[unsafe(method(drawRect:))]
         fn draw_rect(&self, _rect: NSRect) {
-            ns_color(dusk::BG, 1.0).setFill();
+            ns_color(tok::bg(), 1.0).setFill();
             NSRectFill(self.bounds());
         }
     }
@@ -120,19 +119,19 @@ define_class!(
         #[unsafe(method(drawRect:))]
         fn draw_rect(&self, _rect: NSRect) {
             let b = self.bounds();
-            ns_color(dusk::BG, 1.0).setFill();
+            ns_color(tok::bg(), 1.0).setFill();
             NSRectFill(b);
             // Barra de páginas.
-            ns_color(dusk::SIDEBAR, 1.0).setFill();
+            ns_color(tok::sidebar(), 1.0).setFill();
             NSRectFill(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(SIDEBAR_W, b.size.height)));
-            ns_color(dusk::LINE, 1.0).setFill();
+            ns_color(tok::line(), 1.0).setFill();
             NSRectFill(NSRect::new(NSPoint::new(SIDEBAR_W - 1.0, 0.0), NSSize::new(1.0, b.size.height)));
             draw_text(
                 "AJUSTES",
                 NSRect::new(NSPoint::new(20.0, 34.0), NSSize::new(SIDEBAR_W - 40.0, 16.0)),
                 11.0,
                 0.6,
-                dusk::MUTED,
+                tok::muted(),
             );
             for (i, (name, _)) in PAGES.iter().enumerate() {
                 let y = PAGES_TOP + i as f64 * PAGE_ROW_H;
@@ -141,18 +140,18 @@ define_class!(
                         NSPoint::new(10.0, y),
                         NSSize::new(SIDEBAR_W - 20.0, PAGE_ROW_H - 4.0),
                     );
-                    fill_rounded(r, 7.0, dusk::ACCENT, 0.16);
+                    fill_rounded(r, 7.0, tok::accent(), 0.16);
                 }
                 draw_text(
                     name,
                     NSRect::new(NSPoint::new(24.0, y + 7.0), NSSize::new(SIDEBAR_W - 48.0, 18.0)),
                     13.0,
                     if i == self.ivars().selected.get() { 0.5 } else { 0.0 },
-                    if i == self.ivars().selected.get() { dusk::TEXT } else { dusk::MUTED },
+                    if i == self.ivars().selected.get() { tok::text() } else { tok::muted() },
                 );
             }
             // Cabecera de la página.
-            ns_color(dusk::LINE, 1.0).setFill();
+            ns_color(tok::line(), 1.0).setFill();
             NSRectFill(NSRect::new(
                 NSPoint::new(SIDEBAR_W, HEADER_H),
                 NSSize::new(b.size.width - SIDEBAR_W, 1.0),
@@ -219,14 +218,14 @@ impl SettingsRoot {
             unsafe { msg_send![super(d), init] }
         };
         scroll.setDocumentView(Some(&doc));
-        let title = label(mtm, "", 20.0, dusk::TEXT, false);
+        let title = label(mtm, "", 20.0, tok::text(), false);
         title.setFont(Some(&NSFont::systemFontOfSize_weight(20.0, 0.6)));
         let ivars = RootIvars {
             selected: Cell::new(0),
             on_page: RefCell::new(None),
             title,
-            note: label(mtm, "", 12.0, dusk::MUTED, false),
-            status: label(mtm, "", 12.0, dusk::OK, false),
+            note: label(mtm, "", 12.0, tok::muted(), false),
+            status: label(mtm, "", 12.0, tok::ok(), false),
             open_file,
             scroll,
             doc,
@@ -236,9 +235,7 @@ impl SettingsRoot {
         let this: Retained<Self> = unsafe {
             msg_send![super(this), initWithFrame: NSRect::new(NSPoint::ZERO, NSSize::new(WINDOW_W, WINDOW_H))]
         };
-        // SAFETY: constante de AppKit.
-        let dark = NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua });
-        this.setAppearance(dark.as_deref());
+        this.setAppearance(crate::palette::ui_appearance().as_deref());
         let iv = this.ivars();
         iv.title.setFrame(NSRect::new(
             NSPoint::new(SIDEBAR_W + 24.0, 22.0),
@@ -286,6 +283,12 @@ impl SettingsRoot {
             .title
             .setStringValue(&NSString::from_str(title));
         self.ivars().note.setStringValue(&NSString::from_str(note));
+        self.ivars()
+            .title
+            .setTextColor(Some(&ns_color(tok::text(), 1.0)));
+        self.ivars()
+            .note
+            .setTextColor(Some(&ns_color(tok::muted(), 1.0)));
     }
 
     /// Mensaje de estado junto a la cabecera (verde, o rojo si es un error).
@@ -293,7 +296,7 @@ impl SettingsRoot {
         let iv = self.ivars();
         iv.status.setStringValue(&NSString::from_str(text));
         iv.status.setTextColor(Some(&ns_color(
-            if error { dusk::ERROR } else { dusk::OK },
+            if error { tok::error() } else { tok::ok() },
             1.0,
         )));
     }
@@ -318,12 +321,12 @@ impl SettingsRoot {
             let label_h = lines * 17.0;
             let row_h = (label_h + 4.0 + 15.0 + 22.0).max(64.0);
 
-            let l = label(mtm, &row.label, 13.0, dusk::TEXT, false);
+            let l = label(mtm, &row.label, 13.0, tok::text(), false);
             l.setFrame(NSRect::new(
                 NSPoint::new(margin, y + 10.0),
                 NSSize::new(label_w, label_h),
             ));
-            let path = label(mtm, &row.path, 11.0, dusk::GHOST, true);
+            let path = label(mtm, &row.path, 11.0, tok::ghost(), true);
             path.setFrame(NSRect::new(
                 NSPoint::new(margin, y + 10.0 + label_h + 3.0),
                 NSSize::new(label_w, 15.0),
@@ -384,7 +387,7 @@ impl SettingsRoot {
                     iv.doc.addSubview(&p);
                 }
                 Control::ReadOnly(text) => {
-                    let l = label(mtm, text, 12.0, dusk::MUTED, false);
+                    let l = label(mtm, text, 12.0, tok::muted(), false);
                     l.setFrame(NSRect::new(
                         NSPoint::new(control_x, y + 14.0),
                         NSSize::new(control_w + 90.0, 34.0),

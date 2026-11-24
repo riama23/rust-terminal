@@ -6,6 +6,16 @@ La configuración se lee de `~/.config/rust-terminal/config.toml` (o de `$XDG_CO
 
 Los cambios se aplican al guardar el archivo, sin reiniciar. Las opciones marcadas como **pestañas nuevas** solo afectan a las pestañas y paneles que se abran después. Si hay un error, se muestra un aviso y se ignora solo la opción incorrecta.
 
+## `[appearance]`
+
+### `theme`
+
+Tema de la interfaz: `dusk` (oscuro), `paper` (claro) o `system` (sigue al sistema). Los colores que pongas en `[colors]` mandan sobre los del tema.
+
+- **Tipo:** uno de: `"dusk"`, `"paper"`, `"system"`
+- **Por defecto:** `"dusk"`
+- **Se aplica:** en vivo
+
 ## `[font]`
 
 ### `family`

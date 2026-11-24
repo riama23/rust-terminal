@@ -84,7 +84,7 @@ Es el núcleo de la tesis del producto.
 - **Denegar con motivo:** el `message` del deny llega a Claude, pero como resultado de herramienta y no como mensaje del usuario (spike). **Decidido (2026-11-23):** solo `message`, sin teclear nada en la sesión; si Claude no lo sigue al pie de la letra, el usuario le escribe directamente.
 - **Política de matching:** sin `tool_use_id`, y sin poder casar por hash de `tool_input` (otros hooks lo reescriben), se casa por `session_id` y orden de llegada. Siempre se muestra el `tool_input` del `PermissionRequest`, que es lo que se aprueba. Si hay dos peticiones simultáneas de la misma sesión, o ninguna encaja con una sesión conocida, no se devuelve decisión y gana el prompt de Claude Code. **Nunca se permite a ciegas.**
 - **Inicio de sesión:** `SessionStart` no llega por HTTP, así que se usa un hook `command` que avise al broker.
-- **Tokens de color** del spec en `palette.rs`, solo Dusk. La paleta ANSI no cambia.
+- **Tokens de color** del spec en `palette.rs` (`tok::bg()`, `tok::text()`…): Dusk y, desde la v1.6, Paper. La paleta ANSI de Paper se define en `config::paper_theme`.
 - **Wrapper de status line:** ejecuta el comando del usuario, devuelve su salida sin cambios y reenvía el JSON de stdin al broker.
 - **Versión mínima de Claude Code:** la probada en el spike. Se lee del campo `version` de la status line. Por debajo, el agente funciona como panel normal, sin sidebar ni attention bar.
 

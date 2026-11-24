@@ -10,16 +10,16 @@ use objc2::runtime::NSObjectProtocol;
 use objc2::runtime::{AnyObject, Sel};
 use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSButton,
-    NSCompositingOperation, NSEvent, NSFont, NSLineBreakMode, NSRectFill, NSRectFillUsingOperation,
-    NSResponder, NSScrollView, NSTextField, NSTrackingArea, NSTrackingAreaOptions, NSView,
+    NSAppearanceCustomization, NSButton, NSCompositingOperation, NSEvent, NSFont, NSLineBreakMode,
+    NSRectFill, NSRectFillUsingOperation, NSResponder, NSScrollView, NSTextField, NSTrackingArea,
+    NSTrackingAreaOptions, NSView,
 };
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 
 use crate::agent::diff::{FileStatus, LineKind};
 use crate::agent::review::{ROW_H, Row, Side, row_at};
 use crate::agent_ui::{draw_text, draw_text_ex, fill_rounded, ns_color, stroke_rounded};
-use crate::palette::dusk;
+use crate::palette::tok;
 
 // --- Lista de archivos ---
 
@@ -44,10 +44,10 @@ pub fn file_at(y: f64, count: usize) -> Option<usize> {
 
 fn status_color(s: FileStatus) -> [u8; 3] {
     match s {
-        FileStatus::Added => dusk::OK,
-        FileStatus::Modified => dusk::WARN,
-        FileStatus::Deleted => dusk::ERROR,
-        FileStatus::Renamed => dusk::ACCENT,
+        FileStatus::Added => tok::ok(),
+        FileStatus::Modified => tok::warn(),
+        FileStatus::Deleted => tok::error(),
+        FileStatus::Renamed => tok::accent(),
     }
 }
 
@@ -77,23 +77,23 @@ define_class!(
         #[unsafe(method(drawRect:))]
         fn draw_rect(&self, _rect: NSRect) {
             let b = self.bounds();
-            ns_color(dusk::SIDEBAR, 1.0).setFill();
+            ns_color(tok::sidebar(), 1.0).setFill();
             NSRectFill(b);
-            ns_color(dusk::LINE, 1.0).setFill();
+            ns_color(tok::line(), 1.0).setFill();
             NSRectFill(NSRect::new(NSPoint::new(b.size.width - 1.0, 0.0), NSSize::new(1.0, b.size.height)));
             draw_text(
                 "ARCHIVOS",
                 NSRect::new(NSPoint::new(16.0, 12.0), NSSize::new(b.size.width - 32.0, 16.0)),
                 11.0,
                 0.6,
-                dusk::MUTED,
+                tok::muted(),
             );
             for (i, row) in self.ivars().rows.borrow().iter().enumerate() {
                 let y = LIST_HEADER_H + i as f64 * LIST_ROW_H;
                 if row.selected {
                     let r = NSRect::new(NSPoint::new(6.0, y), NSSize::new(b.size.width - 13.0, LIST_ROW_H - 2.0));
-                    fill_rounded(r, 6.0, dusk::ACCENT, 0.07);
-                    stroke_rounded(r, 6.0, dusk::ACCENT, 0.5, 1.0);
+                    fill_rounded(r, 6.0, tok::accent(), 0.07);
+                    stroke_rounded(r, 6.0, tok::accent(), 0.5, 1.0);
                 }
                 // Etiqueta A/M/D/R: letra y color (nunca solo color).
                 draw_text_ex(
@@ -114,11 +114,11 @@ define_class!(
                     ),
                     12.0,
                     0.0,
-                    dusk::TEXT,
+                    tok::text(),
                 );
                 if row.comments > 0 {
                     let pill = NSRect::new(NSPoint::new(b.size.width - 40.0, y + 6.0), NSSize::new(26.0, 18.0));
-                    fill_rounded(pill, 9.0, dusk::ATTENTION, 0.9);
+                    fill_rounded(pill, 9.0, tok::attention(), 0.9);
                     draw_text_ex(
                         &row.comments.to_string(),
                         NSRect::new(
@@ -127,7 +127,7 @@ define_class!(
                         ),
                         11.0,
                         0.7,
-                        dusk::BG,
+                        tok::bg(),
                         false,
                         true,
                     );
@@ -206,7 +206,7 @@ define_class!(
         #[unsafe(method(drawRect:))]
         fn draw_rect(&self, _rect: NSRect) {
             let b = self.bounds();
-            ns_color(dusk::BG, 1.0).setFill();
+            ns_color(tok::bg(), 1.0).setFill();
             NSRectFill(b);
             let visible = self.visibleRect();
             let rows = self.ivars().rows.borrow();
@@ -224,7 +224,7 @@ define_class!(
                     NSRect::new(NSPoint::new(24.0, 24.0), NSSize::new(b.size.width - 48.0, 18.0)),
                     13.0,
                     0.0,
-                    dusk::MUTED,
+                    tok::muted(),
                 );
             }
         }
@@ -285,14 +285,14 @@ fn draw_row(row: &Row, line: NSRect, width: f64, hovered: bool) {
     };
     match row {
         Row::Hunk(header) => {
-            ns_color(dusk::SURFACE, 1.0).setFill();
+            ns_color(tok::surface(), 1.0).setFill();
             NSRectFill(line);
             draw_text_ex(
                 header,
                 text_rect(X_OLD),
                 11.0,
                 0.0,
-                dusk::MUTED,
+                tok::muted(),
                 true,
                 false,
             );
@@ -304,9 +304,9 @@ fn draw_row(row: &Row, line: NSRect, width: f64, hovered: bool) {
             text,
         } => {
             let (tint, sign_color) = match kind {
-                LineKind::Add => (Some(dusk::OK), dusk::OK),
-                LineKind::Del => (Some(dusk::ERROR), dusk::ERROR),
-                LineKind::Context => (None, dusk::MUTED),
+                LineKind::Add => (Some(tok::ok()), tok::ok()),
+                LineKind::Del => (Some(tok::error()), tok::error()),
+                LineKind::Context => (None, tok::muted()),
             };
             if let Some(c) = tint {
                 ns_color(c, 0.12).setFill();
@@ -320,7 +320,7 @@ fn draw_row(row: &Row, line: NSRect, width: f64, hovered: bool) {
                 num_rect(X_OLD),
                 11.0,
                 0.0,
-                dusk::GHOST,
+                tok::ghost(),
                 true,
                 true,
             );
@@ -329,7 +329,7 @@ fn draw_row(row: &Row, line: NSRect, width: f64, hovered: bool) {
                 num_rect(X_NEW),
                 11.0,
                 0.0,
-                dusk::GHOST,
+                tok::ghost(),
                 true,
                 true,
             );
@@ -339,19 +339,19 @@ fn draw_row(row: &Row, line: NSRect, width: f64, hovered: bool) {
                 LineKind::Context => " ",
             };
             draw_text_ex(sign, text_rect(X_SIGN), 12.0, 0.6, sign_color, true, false);
-            draw_text_ex(text, text_rect(X_TEXT), 12.0, 0.0, dusk::TEXT, true, false);
+            draw_text_ex(text, text_rect(X_TEXT), 12.0, 0.0, tok::text(), true, false);
             if hovered {
                 let plus = NSRect::new(
                     NSPoint::new(X_PLUS, y + 2.0),
                     NSSize::new(18.0, ROW_H - 4.0),
                 );
-                fill_rounded(plus, 4.0, dusk::ACCENT, 0.9);
+                fill_rounded(plus, 4.0, tok::accent(), 0.9);
                 draw_text_ex(
                     "+",
                     NSRect::new(NSPoint::new(plus.origin.x, plus.origin.y), plus.size),
                     12.0,
                     0.8,
-                    dusk::BG,
+                    tok::bg(),
                     true,
                     true,
                 );
@@ -359,14 +359,14 @@ fn draw_row(row: &Row, line: NSRect, width: f64, hovered: bool) {
         }
         Row::Comment { text, first, .. } => {
             // `NSRectFill` copia en vez de mezclar: con colores translúcidos, SourceOver.
-            ns_color(dusk::ATTENTION, 0.10).setFill();
+            ns_color(tok::attention(), 0.10).setFill();
             NSRectFillUsingOperation(line, NSCompositingOperation::SourceOver);
-            ns_color(dusk::ATTENTION, 0.9).setFill();
+            ns_color(tok::attention(), 0.9).setFill();
             NSRectFillUsingOperation(
                 NSRect::new(NSPoint::new(X_OLD, y), NSSize::new(3.0, ROW_H)),
                 NSCompositingOperation::SourceOver,
             );
-            draw_text(text, text_rect(X_NEW), 12.0, 0.0, dusk::TEXT);
+            draw_text(text, text_rect(X_NEW), 12.0, 0.0, tok::text());
             if *first {
                 draw_text_ex(
                     "×",
@@ -376,7 +376,7 @@ fn draw_row(row: &Row, line: NSRect, width: f64, hovered: bool) {
                     ),
                     14.0,
                     0.4,
-                    dusk::MUTED,
+                    tok::muted(),
                     false,
                     true,
                 );
@@ -470,14 +470,14 @@ define_class!(
         #[unsafe(method(drawRect:))]
         fn draw_rect(&self, _rect: NSRect) {
             let b = self.bounds();
-            ns_color(dusk::BG, 1.0).setFill();
+            ns_color(tok::bg(), 1.0).setFill();
             NSRectFill(b);
-            ns_color(dusk::CHROME, 1.0).setFill();
+            ns_color(tok::chrome(), 1.0).setFill();
             NSRectFill(NSRect::new(
                 NSPoint::new(0.0, b.size.height - HEADER_H),
                 NSSize::new(b.size.width, HEADER_H),
             ));
-            ns_color(dusk::LINE, 1.0).setFill();
+            ns_color(tok::line(), 1.0).setFill();
             NSRectFill(NSRect::new(
                 NSPoint::new(0.0, b.size.height - HEADER_H),
                 NSSize::new(b.size.width, 1.0),
@@ -525,8 +525,8 @@ impl ReviewRoot {
         scroll.setDrawsBackground(false);
         scroll.setDocumentView(Some(&diff));
         let ivars = RootIvars {
-            title: small_label(mtm, 15.0, dusk::TEXT),
-            subtitle: small_label(mtm, 12.0, dusk::MUTED),
+            title: small_label(mtm, 15.0, tok::text()),
+            subtitle: small_label(mtm, 12.0, tok::muted()),
             refresh: button("Actualizar", actions.refresh),
             send: button("Enviar comentarios a Claude", actions.send),
             pr: button("Abrir PR\u{2026}", actions.pr),
@@ -541,9 +541,7 @@ impl ReviewRoot {
         let this = Self::alloc(mtm).set_ivars(ivars);
         // SAFETY: inicializador designado de NSView.
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
-        // SAFETY: constante de AppKit.
-        let dark = NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua });
-        this.setAppearance(dark.as_deref());
+        this.setAppearance(crate::palette::ui_appearance().as_deref());
         let iv = this.ivars();
         for v in [
             &*iv.title as &NSView,
@@ -568,6 +566,8 @@ impl ReviewRoot {
         let iv = self.ivars();
         iv.title.setStringValue(&NSString::from_str(title));
         iv.subtitle.setStringValue(&NSString::from_str(subtitle));
+        iv.title.setTextColor(Some(&ns_color(tok::text(), 1.0)));
+        iv.subtitle.setTextColor(Some(&ns_color(tok::muted(), 1.0)));
         iv.send.setTitle(&NSString::from_str(send_title));
         iv.send.setEnabled(send_enabled);
         self.relayout();
