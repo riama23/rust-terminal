@@ -203,6 +203,14 @@ pub const OPTIONS: &[OptionSpec] = &[
         description: "Orden para «Abrir en el editor» (⌘O) con `{path}`, `{line}` y `{col}`, por ejemplo `code -g {path}:{line}:{col}`. Vacío: `open -t` (el editor de texto por defecto, sin línea).",
     },
     OptionSpec {
+        section: "control",
+        key: "enabled",
+        kind: Kind::Bool,
+        default: "true",
+        apply: Apply::NewTabs,
+        description: "API de control por agentes (experimental): un socket Unix privado y el comando `rt` para que un agente de una terminal liste sesiones, lea pantalla y bloques y, con tu permiso, escriba en ellas. **Leer funciona con el token** (que reciben todas las shells de la app); teclear, abrir y cerrar piden permiso. Se aplica al reiniciar.",
+    },
+    OptionSpec {
         section: "quick_terminal",
         key: "enabled",
         kind: Kind::Bool,
@@ -449,6 +457,7 @@ pub struct Config {
     pub appearance: Appearance,
     pub production_hosts: Vec<String>,
     pub quick_enabled: bool,
+    pub control_enabled: bool,
     pub quick_height: f64,
     pub quick_opacity: f64,
     /// Claves de `[colors]` que el usuario puso en el archivo: no las pisa el tema.
@@ -684,6 +693,7 @@ impl Config {
                 self.long_command_seconds = i as u64
             }
             ("bell", "dock_bounce", Value::Bool(b)) => self.bell_dock_bounce = b,
+            ("control", "enabled", Value::Bool(b)) => self.control_enabled = b,
             ("quick_terminal", "enabled", Value::Bool(b)) => self.quick_enabled = b,
             ("quick_terminal", "height", Value::Int(i)) => self.quick_height = i as f64,
             ("quick_terminal", "opacity", Value::Float(f)) => self.quick_opacity = f,
@@ -848,6 +858,7 @@ impl Default for Config {
             appearance: Appearance::Dusk,
             production_hosts: Vec::new(),
             quick_enabled: false,
+            control_enabled: false,
             quick_height: 0.0,
             quick_opacity: 1.0,
             colors_set: Vec::new(),

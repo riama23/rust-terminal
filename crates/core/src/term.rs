@@ -572,6 +572,31 @@ impl Term {
         }
         lines.join("\n")
     }
+
+    /// Las últimas `max_lines` líneas (historial incluido) como texto, sin
+    /// espacios finales y sin líneas vacías al final. Es lo que lee la API de
+    /// control (v2).
+    pub fn recent_text(&self, max_lines: usize) -> String {
+        let grid = &self.screen.grid;
+        let max_lines = max_lines.max(1);
+        let total = grid.history_len() + grid.rows();
+        let last = grid.first_line() + total as Line - 1;
+        // Se lee con margen (las filas vacías de debajo del cursor no cuentan).
+        let want = (max_lines + grid.rows()) as Line;
+        let first = last.saturating_sub(want - 1).max(grid.first_line());
+        let range = SelectionRange {
+            start: selection::point(first, 0),
+            end: selection::point(last, grid.cols().saturating_sub(1)),
+            block: false,
+        };
+        let text = selection::text_in_range(grid, range);
+        let mut lines: Vec<&str> = text.lines().map(|l| l.trim_end_matches(' ')).collect();
+        while lines.last().is_some_and(|l| l.is_empty()) {
+            lines.pop();
+        }
+        let skip = lines.len().saturating_sub(max_lines);
+        lines[skip..].join("\n")
+    }
 }
 
 /// Primer valor del parámetro `i`, con `default` si falta o es 0.
@@ -2554,5 +2579,22 @@ mod tests {
         }
         t.advance(b"\x1b[?1049hfoo\x1b[41m\x1b[2Jbar\x1b[?1049l");
         t.grid().check_used();
+    }
+
+    #[test]
+    fn recent_text_reads_history_and_the_screen() {
+        let mut t = Term::with_history_limit(10, 3, 100);
+        for i in 1..=8 {
+            t.advance(format!("linea{i}\r\n").as_bytes());
+        }
+        // Pantalla de 3 filas: lo último queda en pantalla, lo anterior en el historial.
+        let all = t.recent_text(100);
+        assert!(all.starts_with("linea1\n"), "{all}");
+        assert!(all.ends_with("linea8"), "{all}");
+        // Solo las últimas.
+        assert_eq!(t.recent_text(2), "linea7\nlinea8");
+        assert_eq!(t.recent_text(1), "linea8");
+        // Más de lo que hay no falla, y sin nada devuelve vacío.
+        assert_eq!(Term::new(10, 3).recent_text(5), "");
     }
 }

@@ -13,7 +13,7 @@ Este documento encaja el spec de producto (`docs/macOS Terminal — UI UX Spec f
 | v1.4 | Review de diff, comentarios en lote, inspector | Hecho, con descartar worktree y abrir PR; verificación manual pendiente (`docs/verificacion-v1.4.md`) |
 | v1.5 | Bloques visuales, paleta de comandos, polish de splits | Hecho con dos desviaciones (ver «Estado de la v1.5»); verificación manual pendiente (`docs/verificacion-v1.5.md`) |
 | v1.6 | Ajustes, tema Paper, quick terminal, keybindings | Hecho (ajustes, teclado configurable, Paper y Follow system, PROD, quick terminal); verificación manual pendiente (`docs/verificacion-v1.6.md`) |
-| v2 | API de control por agentes | Sin diseñar |
+| v2 | API de control por agentes | Implementada (experimental); verificación manual pendiente (`docs/verificacion-v2.md`) |
 
 El eje del roadmap es **actuar sobre el agente** desde la terminal (aprobar, denegar, revisar), no ser una terminal más. Los bloques visuales y la paleta van al final.
 
@@ -190,7 +190,14 @@ Es el núcleo de la tesis del producto.
 
 Permite a un agente abrir sesiones, enviar teclas, leer la pantalla y leer bloques como datos estructurados.
 
-**Abierto:** CLI, socket o MCP; modelo de seguridad; estabilidad de la API. No se diseña ahora.
+**Decidido con el usuario (v2.0, experimental, protocolo `v0`):**
+
+- **Interfaz:** socket Unix con JSON por líneas y un comando `rt` fino encima. Un servidor MCP podría venir después como adaptador del mismo socket.
+- **Seguridad:** carpeta y socket privados, token distinto en cada arranque entregado solo a las shells de la app; leer funciona con el token; **teclear, abrir y cerrar piden permiso** en la interfaz (una vez, o en esta sesión por agente), con *Denegar* por defecto y aviso visible.
+- **Alcance:** listar sesiones, leer pantalla y bloques, enviar texto y teclas, abrir y cerrar sesiones. Fuera: lanzar agentes, aprobar permisos del broker, eventos.
+- **Estabilidad:** `v0`, sin garantías hasta que se use. Referencia en `docs/api-control.md`.
+
+**Estado:** implementada (`control/`, `control_controller` y el crate `crates/ctl` con `rt`); verificación manual pendiente (`docs/verificacion-v2.md`).
 
 **Separación:** el broker de v1.2 (Claude Code hacia la app) y esta API (agentes hacia la app) son canales distintos. El modelo de sesiones de la v1.2 se diseña para reutilizarse aquí.
 

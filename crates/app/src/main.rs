@@ -12,6 +12,8 @@ mod command_palette;
 mod config;
 mod config_edit;
 mod container;
+mod control;
+mod control_controller;
 mod font;
 mod hotkey;
 mod icon;
@@ -114,6 +116,7 @@ define_class!(
             if let Some(view) = self.view() {
                 view.shutdown_agents();
             }
+            control_controller::shutdown();
         }
 
         /// Cmd+Q: confirma si hay programas en marcha.
@@ -561,6 +564,8 @@ fn open_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
         // SAFETY: `tick:` existe en RenderTarget y recibe el display link.
         unsafe { view.displayLinkWithTarget_selector(target, sel!(tick:)) }
     });
+    // La API de control: socket y token para las shells que lance `start`.
+    control_controller::start(waker.clone(), view.control_enabled());
     view.start(waker.clone());
     // ⌃⌥N: «Nuevo agente…» desde cualquier aplicación.
     hotkey::register_new_agent(waker.clone());
