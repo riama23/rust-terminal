@@ -14,6 +14,8 @@ El criterio para dar la v1 por terminada es usar la terminal **una semana en lug
 4. Opcional: copiar tu `~/.config/rust-terminal/config.toml` entre Macs.
 5. Para actualizar cuando haya arreglos: `scripts/install.sh` en la carpeta del repositorio. Después, Cmd+Q y volver a abrir.
 
+Para probar también los agentes de Claude Code (sidebar, permisos, revisión de cambios), sigue `docs/probar-agentes.md`.
+
 ## Cuando algo falle
 
 Pulsa **Cmd+Shift+I** (menú Ayuda → Informar de un fallo…) **en el panel donde ha fallado**. Se abre la página de issue nueva de GitHub con un diagnóstico ya rellenado:

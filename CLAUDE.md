@@ -21,6 +21,11 @@ Workspace de Rust (edition 2024) con dos crates. Sus nombres son provisionales h
   - `watcher`: vigila la configuración con kqueue (sin sondeo) y avisa al hilo principal (`configChanged`).
   - `notify`: notificaciones con `UNUserNotificationCenter`. Solo funcionan desde el `.app`; con `cargo run` van a stderr.
   - `shell`: inyección para zsh. Los scripts están en `crates/app/shell/zsh/`.
+  - `container`: la vista de contenido de la ventana (`ContainerView`). Reparte el ancho entre un panel izquierdo (sidebar de agentes), la terminal y un panel derecho, y deja una barra bajo la terminal (attention bar). **La `TerminalView` es una subvista: nunca se llega a ella con `window.contentView().downcast::<TerminalView>()`, sino con `container::terminal_view(&window)`.** Un `downcast` a mano falla en silencio (esto ya rompió notificaciones, recarga de configuración y la confirmación de Cmd+Q).
+  - `agent/` (v1.2, ver `docs/roadmap.md`): integración con Claude Code, sin AppKit y con tests. `broker` (servidor HTTP síncrono en loopback, token por lanzamiento y clave por agente), `http`, `launch` (flags de `claude`, `--settings` por agente, status line que conserva la del usuario), `model` (estados desde los hooks), `hub` (sesiones y paneles), `rules` (*Siempre permitir*). **Fail safe: ante cualquier duda el broker contesta `{}` y gana el prompt de Claude Code; nunca permite por defecto.**
+  - `agent_controller` (pegamento con la `TerminalView`), `agent_ui` (sidebar y attention bar en AppKit), `agent_sheet` (formulario ⌘N).
+  - Review (v1.4): `agent/diff` (parser de diffs), `agent/git` (diff del **árbol de trabajo** contra la base común, no `base...HEAD`), `agent/review` (comentarios, mensaje y saneado: **nunca teclear en la PTY sin sanear ni con un permiso pendiente**), `review_ui` y `review_controller` (ventana de Review), y en `agent_ui` el inspector y la barra de terminado.
+  - `agent/alerts` (política de avisos y acciones de notificación, pura), `notify` (categoría con *Permitir*, *Enviar respuesta* y *Abrir*, y su delegado), `hotkey` (⌃⌥N global con Carbon, sin Accesibilidad). El badge del Dock y el icono de la barra de menús se actualizan en `refresh_agent_ui`.
 
 El diseño de abajo está acordado con el usuario; los temas de "Abierto" no se deciden sin preguntar.
 
@@ -51,7 +56,8 @@ El diseño de abajo está acordado con el usuario; los temas de "Abierto" no se 
   - el criterio de terminada: sustituir a Warp durante una semana (`docs/semana-de-prueba.md`);
   - medir la latencia con Typometer (`scripts/latency.sh`);
   - cerrar la distancia con Ghostty en throughput (`docs/rendimiento.md`).
-- **Después de la v1:** el roadmap de versiones v1.1–v2 (agentes, broker, review, bloques visuales, ajustes) está en `docs/roadmap.md`, derivado del spec de producto. Ese alcance no forma parte de la v1; las decisiones ya cerradas están en su anexo.
+- **Después de la v1:** el roadmap de versiones v1.1–v2 (agentes, broker, review, bloques visuales, ajustes) está en `docs/roadmap.md`, derivado del spec de producto. Ese alcance no forma parte de la v1; las decisiones ya cerradas están en su anexo. **Rama `v1.1-contenedor`:** v1.1 (contenedor, `docs/verificacion-v1.1.md`), v1.2 (agentes, `docs/verificacion-v1.2.md`) y v1.3 (notificaciones, Dock y barra de menús, `docs/verificacion-v1.3.md`) y v1.4 (Review e inspector, `docs/verificacion-v1.4.md`) implementadas y en verificación manual; sin mergear a `main`.
+- **Regla de AppKit (macOS 14+):** una vista no recorta su dibujo a sus límites. Las vistas propias rellenan `self.bounds()`, no el `rect` de `drawRect:`, y `NSRectFill` copia en vez de mezclar (usar `NSRectFillUsingOperation(…, SourceOver)` con colores translúcidos).
 - **Pospuesto:** comparación con Ghostty y Alacritty. Hay que instalarlos, y Java para Typometer.
 
 **Modelo de hilos (`session.rs` y `window.rs`):**
@@ -161,5 +167,7 @@ Un **emulador de terminal para macOS** escrito en Rust (no una shell: por dentro
   - `RT_LOG_UNHANDLED=1`: muestra en stderr las secuencias que el núcleo ignora.
   - `RT_FRAME_STATS=1`: muestra los frames por segundo.
   - `RT_NO_SHELL_INTEGRATION=1`: desactiva la inyección para zsh.
+  - Verificación de la interfaz de agentes (no hace falta ver la pantalla): `RT_SNAPSHOT_DIR=/ruta` vuelca la sidebar, la barra y el formulario a PNG; `RT_DUMP_PANE=/archivo` vuelca el texto del panel del agente; `RT_AGENT_TEST="tarea"` (con `RT_AGENT_DIR`) lanza un agente al arrancar; `RT_OPEN_SHEET=1` y `RT_SHEET_PREFILL` abren el formulario; `RT_DEBUG_SIDEBAR=1` pone un panel lateral de prueba; `RT_AUTO_DECIDE=allow|deny` contesta solo los permisos y **solo existe en compilaciones debug**.
+  - `scripts/window-shot.sh` captura solo la ventana de la app (necesita el permiso de Grabación de pantalla). Una ventana lanzada desde otra app no pinta Metal hasta ponerla al frente.
 
 Rust está instalado con rustup en `~/.cargo/bin`. Si `cargo` no aparece en el PATH de un shell no interactivo, ejecuta antes `. "$HOME/.cargo/env"`.

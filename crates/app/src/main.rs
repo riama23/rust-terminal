@@ -1,14 +1,22 @@
 //! Aplicación de macOS: una ventana con pestañas y paneles, render con Metal
 //! y la shell del usuario en una PTY por panel.
 
+mod agent;
+mod agent_controller;
+mod agent_sheet;
+mod agent_ui;
 mod config;
+mod container;
 mod font;
+mod hotkey;
 mod icon;
 mod input;
 mod notify;
 mod palette;
 mod renderer;
 mod report;
+mod review_controller;
+mod review_ui;
 mod session;
 mod shell;
 mod view;
@@ -34,6 +42,7 @@ use objc2_metal::MTLPixelFormat;
 use objc2_quartz_core::{CAMetalLayer, kCAGravityTopLeft};
 
 use crate::config::Config;
+use crate::container::ContainerView;
 use crate::font::Metrics;
 use crate::view::TerminalView;
 use crate::window::WindowShared;
@@ -87,6 +96,14 @@ define_class!(
             true
         }
 
+        /// Al salir: borra los archivos (con tokens) de los agentes.
+        #[unsafe(method(applicationWillTerminate:))]
+        fn will_terminate(&self, _notification: &NSNotification) {
+            if let Some(view) = self.view() {
+                view.shutdown_agents();
+            }
+        }
+
         /// Cmd+Q: confirma si hay programas en marcha.
         #[unsafe(method(applicationShouldTerminate:))]
         fn should_terminate(&self, _app: &NSApplication) -> NSApplicationTerminateReply {
@@ -94,8 +111,7 @@ define_class!(
                 .ivars()
                 .window
                 .get()
-                .and_then(|w| w.contentView())
-                .and_then(|v| v.downcast::<TerminalView>().ok())
+                .and_then(|w| container::terminal_view(w))
                 .is_none_or(|v| v.confirm_quit());
             if ok {
                 NSApplicationTerminateReply::TerminateNow
@@ -111,8 +127,7 @@ impl AppDelegate {
         self.ivars()
             .window
             .get()
-            .and_then(|w| w.contentView())
-            .and_then(|v| v.downcast::<TerminalView>().ok())
+            .and_then(|w| container::terminal_view(w))
     }
 }
 
@@ -166,6 +181,8 @@ fn build_menu(app: &NSApplication, mtm: MainThreadMarker) {
         mtm,
         "Shell",
         vec![
+            menu_item(mtm, "Nuevo agente…", sel!(newAgent:), "n"),
+            menu_item(mtm, "Revisar cambios del agente", sel!(reviewChanges:), "R"),
             menu_item(mtm, "Nueva pestaña", sel!(newTab:), "t"),
             menu_item(mtm, "Dividir en vertical", sel!(splitVertical:), "d"),
             menu_item(mtm, "Dividir en horizontal", sel!(splitHorizontal:), "D"),
@@ -365,7 +382,15 @@ fn open_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
     );
     view.setLayer(Some(&layer));
     view.setWantsLayer(true);
-    window.setContentView(Some(&view));
+    // La terminal es una subvista de un contenedor que deja sitio a paneles
+    // laterales (sidebar, inspector). Sin ellos ocupa toda la ventana.
+    let container = ContainerView::new(mtm, NSRect::new(NSPoint::new(0.0, 0.0), content));
+    container.set_terminal(&view);
+    if std::env::var_os("RT_DEBUG_SIDEBAR").is_some() {
+        let panel = container::DebugPanel::new(mtm);
+        container.set_left(Some((&panel, 240.0)));
+    }
+    window.setContentView(Some(&container));
     window.center();
     window.makeKeyAndOrderFront(None);
     window.makeFirstResponder(Some(&view));
@@ -377,6 +402,38 @@ fn open_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
         unsafe { view.displayLinkWithTarget_selector(target, sel!(tick:)) }
     });
     view.start(waker.clone());
+    // ⌃⌥N: «Nuevo agente…» desde cualquier aplicación.
+    hotkey::register_new_agent(waker.clone());
+    // Ayuda de verificación: `RT_OPEN_SHEET=1` abre el formulario de nuevo agente.
+    if std::env::var_os("RT_OPEN_SHEET").is_some() {
+        view.new_agent_sheet();
+    }
+    // Ayuda de verificación: `RT_AGENT_TEST="tarea"` lanza un agente al arrancar,
+    // en `RT_AGENT_DIR` (o la carpeta actual), sin pasar por el formulario.
+    if let Some(task) = std::env::var("RT_AGENT_TEST")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        use crate::agent::launch::{Isolation, LaunchSpec, StartMode};
+        let dir = std::env::var_os("RT_AGENT_DIR")
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_default();
+        let spec = LaunchSpec {
+            task,
+            isolation: Isolation::CurrentFolder,
+            mode: StartMode::Ask,
+            model: None,
+            title: Some("Agente de prueba".to_owned()),
+        };
+        if let Err(e) = view.launch_agent(spec, dir) {
+            eprintln!("RT_AGENT_TEST: {e}");
+        }
+        // `RT_OPEN_REVIEW=1` abre además la revisión de ese agente.
+        if std::env::var_os("RT_OPEN_REVIEW").is_some() {
+            view.open_review();
+        }
+    }
     if !errors.is_empty() {
         view.show_config_errors(&errors);
     }

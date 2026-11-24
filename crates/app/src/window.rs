@@ -164,10 +164,7 @@ define_class!(
         fn session_events(&self) {
             let mtm = MainThreadMarker::new().expect("hilo principal");
             for window in NSApplication::sharedApplication(mtm).windows().iter() {
-                if let Some(view) = window
-                    .contentView()
-                    .and_then(|v| v.downcast::<crate::view::TerminalView>().ok())
-                {
+                if let Some(view) = crate::container::terminal_view(&window) {
                     view.process_events();
                 }
             }
@@ -178,11 +175,54 @@ define_class!(
         fn config_changed(&self) {
             let mtm = MainThreadMarker::new().expect("hilo principal");
             for window in NSApplication::sharedApplication(mtm).windows().iter() {
-                if let Some(view) = window
-                    .contentView()
-                    .and_then(|v| v.downcast::<crate::view::TerminalView>().ok())
-                {
+                if let Some(view) = crate::container::terminal_view(&window) {
                     view.reload_config();
+                }
+            }
+        }
+
+        /// El diff de la revisión está calculado (hilo principal).
+        #[unsafe(method(reviewReady))]
+        fn review_ready(&self) {
+            let mtm = MainThreadMarker::new().expect("hilo principal");
+            for window in NSApplication::sharedApplication(mtm).windows().iter() {
+                if let Some(view) = crate::container::terminal_view(&window) {
+                    view.review_ready();
+                    break;
+                }
+            }
+        }
+
+        /// ⌃⌥N: abre el formulario de nuevo agente desde cualquier app.
+        #[unsafe(method(globalNewAgent))]
+        fn global_new_agent(&self) {
+            let mtm = MainThreadMarker::new().expect("hilo principal");
+            for window in NSApplication::sharedApplication(mtm).windows().iter() {
+                if let Some(view) = crate::container::terminal_view(&window) {
+                    view.global_new_agent();
+                    break;
+                }
+            }
+        }
+
+        /// El usuario respondió a una notificación de un agente (hilo principal).
+        #[unsafe(method(notificationResponses))]
+        fn notification_responses(&self) {
+            let mtm = MainThreadMarker::new().expect("hilo principal");
+            for window in NSApplication::sharedApplication(mtm).windows().iter() {
+                if let Some(view) = crate::container::terminal_view(&window) {
+                    view.notification_responses();
+                }
+            }
+        }
+
+        /// Hay eventos del broker de agentes (hilo principal).
+        #[unsafe(method(agentEvents))]
+        fn agent_events(&self) {
+            let mtm = MainThreadMarker::new().expect("hilo principal");
+            for window in NSApplication::sharedApplication(mtm).windows().iter() {
+                if let Some(view) = crate::container::terminal_view(&window) {
+                    view.agent_events();
                 }
             }
         }
@@ -192,10 +232,7 @@ define_class!(
         fn sessions_changed(&self) {
             let mtm = MainThreadMarker::new().expect("hilo principal");
             for window in NSApplication::sharedApplication(mtm).windows().iter() {
-                if let Some(view) = window
-                    .contentView()
-                    .and_then(|v| v.downcast::<crate::view::TerminalView>().ok())
-                {
+                if let Some(view) = crate::container::terminal_view(&window) {
                     view.sessions_changed();
                 }
             }

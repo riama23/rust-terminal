@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering::SeqCst;
 
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObjectProtocol, Sel};
+use objc2::runtime::{AnyObject, Bool, NSObjectProtocol, Sel};
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSApplication, NSCursor, NSEvent, NSEventModifierFlags,
@@ -90,6 +90,8 @@ pub struct ViewIvars {
     /// La ventana es la activa y qué panel tenía el foco (avisos `?1004`).
     window_key: Cell<bool>,
     last_focus: Cell<Option<PaneId>>,
+    /// Agentes de Claude Code de esta ventana (sidebar y attention bar).
+    pub(crate) agents: crate::agent_controller::AgentController,
 }
 
 define_class!(
@@ -107,6 +109,65 @@ define_class!(
         #[unsafe(method(acceptsFirstResponder))]
         fn accepts_first_responder(&self) -> bool {
             true
+        }
+
+        /// ⌘↵ y ⌘⌫ contestan el permiso pendiente, solo si la barra está visible.
+        #[unsafe(method(performKeyEquivalent:))]
+        fn perform_key_equivalent(&self, event: &NSEvent) -> Bool {
+            if self.handle_agent_key(event) {
+                return Bool::YES;
+            }
+            // SAFETY: llamada a la implementación de NSView.
+            unsafe { msg_send![super(self), performKeyEquivalent: event] }
+        }
+
+        #[unsafe(method(allowOnce:))]
+        fn allow_once_action(&self, _sender: Option<&AnyObject>) {
+            self.allow_once();
+        }
+
+        #[unsafe(method(alwaysAllow:))]
+        fn always_allow_action(&self, _sender: Option<&AnyObject>) {
+            self.always_allow();
+        }
+
+        #[unsafe(method(denyPermission:))]
+        fn deny_permission_action(&self, _sender: Option<&AnyObject>) {
+            self.deny_with_reason();
+        }
+
+        /// Elegir un agente en el menú de la barra de menús.
+        #[unsafe(method(focusAgentFromMenu:))]
+        fn focus_agent_from_menu(&self, sender: Option<&AnyObject>) {
+            let key = sender
+                .and_then(|s| s.downcast_ref::<NSMenuItem>())
+                .and_then(|i| i.representedObject())
+                .and_then(|o| o.downcast::<NSString>().ok())
+                .map(|s| s.to_string());
+            if let Some(key) = key {
+                self.focus_agent_and_activate(&key);
+            }
+        }
+
+        /// ⌘⇧R: revisar los cambios del agente del panel con el foco.
+        #[unsafe(method(reviewChanges:))]
+        fn review_changes_action(&self, _sender: Option<&AnyObject>) {
+            self.open_review();
+        }
+
+        #[unsafe(method(reviewSend:))]
+        fn review_send_action(&self, _sender: Option<&AnyObject>) {
+            self.review_send();
+        }
+
+        #[unsafe(method(reviewRefresh:))]
+        fn review_refresh_action(&self, _sender: Option<&AnyObject>) {
+            self.review_refresh();
+        }
+
+        #[unsafe(method(newAgent:))]
+        fn new_agent_action(&self, _sender: Option<&AnyObject>) {
+            self.new_agent_sheet();
         }
 
         #[unsafe(method(keyDown:))]
@@ -501,6 +562,7 @@ impl TerminalView {
             last_reported: Cell::new(None),
             window_key: Cell::new(true),
             last_focus: Cell::new(None),
+            agents: Default::default(),
         });
         // SAFETY: `initWithFrame:` de NSView.
         unsafe { msg_send![super(this), initWithFrame: frame] }
@@ -533,7 +595,7 @@ impl TerminalView {
             .expect("workspace"))
     }
 
-    fn session(&self, id: PaneId) -> Option<Arc<Session>> {
+    pub(crate) fn session(&self, id: PaneId) -> Option<Arc<Session>> {
         self.ivars().sessions.borrow().get(&id).cloned()
     }
 
@@ -542,6 +604,76 @@ impl TerminalView {
             return None;
         }
         self.session(self.with_workspace(Workspace::focused))
+    }
+
+    pub(crate) fn agents(&self) -> &crate::agent_controller::AgentController {
+        &self.ivars().agents
+    }
+
+    pub(crate) fn waker_arc(&self) -> Option<Arc<Waker>> {
+        self.ivars().waker.get().cloned()
+    }
+
+    pub(crate) fn focused_pane(&self) -> PaneId {
+        self.with_workspace(Workspace::focused)
+    }
+
+    /// Da el foco a un panel (cambiando de pestaña si hace falta).
+    pub(crate) fn focus_pane_by_id(&self, id: PaneId) -> bool {
+        let ok = self.with_workspace_mut(|w| w.focus_pane(id));
+        if ok {
+            self.update_layout();
+        }
+        ok
+    }
+
+    pub(crate) fn pane_exists(&self, id: PaneId) -> bool {
+        self.ivars().sessions.borrow().contains_key(&id)
+    }
+
+    pub(crate) fn user_shell(&self) -> String {
+        self.ivars().config.borrow().shell()
+    }
+
+    pub(crate) fn focused_cwd(&self) -> Option<std::path::PathBuf> {
+        self.focused_session().and_then(|s| s.cwd())
+    }
+
+    /// Pestaña nueva que ejecuta `command` en `cwd`. `None` si no se pudo lanzar.
+    pub(crate) fn open_agent_tab(
+        &self,
+        command: Vec<String>,
+        cwd: std::path::PathBuf,
+    ) -> Option<PaneId> {
+        *self.ivars().initial_command.borrow_mut() = Some(command);
+        let id = self.alloc_id();
+        self.with_workspace_mut(|w| w.new_tab(id));
+        let ok = self.spawn_session(id, Some(cwd));
+        if !ok {
+            self.with_workspace_mut(|w| w.close_pane(id));
+        }
+        self.update_layout();
+        ok.then_some(id)
+    }
+
+    /// ⌘↵ (permitir) y ⌘⌫ (denegar) con la attention bar visible.
+    fn handle_agent_key(&self, event: &NSEvent) -> bool {
+        let flags = event.modifierFlags();
+        let only_command = flags.contains(NSEventModifierFlags::Command)
+            && !flags.intersects(
+                NSEventModifierFlags::Shift
+                    | NSEventModifierFlags::Option
+                    | NSEventModifierFlags::Control,
+            );
+        if !only_command || self.pending_permission().is_none() {
+            return false;
+        }
+        match event.keyCode() {
+            36 | 76 => self.allow_once(),
+            51 => self.deny_with_reason(),
+            _ => return false,
+        }
+        true
     }
 
     fn alloc_id(&self) -> PaneId {
@@ -702,6 +834,7 @@ impl TerminalView {
         }
         let remaining = self.with_workspace_mut(|w| w.close_pane(id));
         if remaining {
+            self.reconcile_agents();
             self.update_layout();
         } else {
             NSApplication::sharedApplication(self.mtm()).terminate(None);
@@ -720,6 +853,7 @@ impl TerminalView {
             s.hangup();
         }
         if self.with_workspace_mut(|w| w.close_tab(index)) {
+            self.reconcile_agents();
             self.update_layout();
         } else {
             NSApplication::sharedApplication(self.mtm()).terminate(None);
@@ -744,6 +878,7 @@ impl TerminalView {
                 return;
             }
         }
+        self.reconcile_agents();
         self.update_layout();
     }
 
@@ -898,6 +1033,8 @@ impl TerminalView {
             window.setTitle(&NSString::from_str(&title));
         }
         self.request_frame();
+        // El foco pudo cambiar de agente: la barra sigue al panel enfocado.
+        self.refresh_agent_ui();
     }
 
     // --- Entrada ---
