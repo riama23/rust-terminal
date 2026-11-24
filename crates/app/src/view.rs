@@ -211,6 +211,11 @@ define_class!(
             self.discard_worktree_review();
         }
 
+        #[unsafe(method(reviewToggleList:))]
+        fn review_toggle_list_action(&self, _sender: Option<&AnyObject>) {
+            self.review_toggle_list();
+        }
+
         #[unsafe(method(reviewRefresh:))]
         fn review_refresh_action(&self, _sender: Option<&AnyObject>) {
             self.review_refresh();

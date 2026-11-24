@@ -20,20 +20,18 @@ use crate::agent::diff::{FileStatus, LineKind};
 use crate::agent::review::{ROW_H, Row, Side, row_at};
 use crate::agent_ui::{draw_text, draw_text_ex, fill_rounded, ns_color, stroke_rounded};
 use crate::palette::tok;
+use crate::review_tree::TreeRow;
 
-// --- Lista de archivos ---
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct FileRow {
-    pub path: String,
-    pub status: FileStatus,
-    pub comments: usize,
-    pub selected: bool,
-}
+// --- Lista de archivos (árbol de carpetas) ---
 
 const LIST_HEADER_H: f64 = 36.0;
 const LIST_ROW_H: f64 = 30.0;
+/// Sangría por nivel del árbol.
+const INDENT: f64 = 12.0;
+/// Ancho medio de un carácter a 12 pt, para recortar los nombres largos.
+const CHAR_W: f64 = 6.5;
 
+/// Posición de la fila (no del archivo) bajo la coordenada `y` de la lista.
 pub fn file_at(y: f64, count: usize) -> Option<usize> {
     if y < LIST_HEADER_H {
         return None;
@@ -52,10 +50,108 @@ fn status_color(s: FileStatus) -> [u8; 3] {
 }
 
 type IndexHandler = Box<dyn Fn(usize)>;
+type PathHandler = Box<dyn Fn(String)>;
 
 pub struct ListIvars {
-    rows: RefCell<Vec<FileRow>>,
+    rows: RefCell<Vec<TreeRow>>,
+    /// Recibe el índice del archivo (en el diff), no el de la fila.
     on_select: RefCell<Option<IndexHandler>>,
+    /// Recibe la ruta de la carpeta que se pliega o despliega.
+    on_toggle: RefCell<Option<PathHandler>>,
+}
+
+/// Dibuja una fila del árbol: carpeta (triángulo y nombre) o archivo (letra de estado y nombre).
+fn draw_tree_row(w: f64, y: f64, row: &TreeRow) {
+    let (depth, comments, selected) = match row {
+        TreeRow::Dir {
+            depth, comments, ..
+        } => (*depth, *comments, false),
+        TreeRow::File {
+            depth,
+            comments,
+            selected,
+            ..
+        } => (*depth, *comments, *selected),
+    };
+    let indent = depth as f64 * INDENT;
+    if selected {
+        let r = NSRect::new(
+            NSPoint::new(6.0, y),
+            NSSize::new(w - 13.0, LIST_ROW_H - 2.0),
+        );
+        fill_rounded(r, 6.0, tok::accent(), 0.07);
+        stroke_rounded(r, 6.0, tok::accent(), 0.5, 1.0);
+    }
+    let pill_w = if comments > 0 { 30.0 } else { 0.0 };
+    let text_x = match row {
+        TreeRow::Dir { .. } => 28.0 + indent,
+        TreeRow::File { .. } => 36.0 + indent,
+    };
+    let text_w = (w - text_x - 14.0 - pill_w).max(0.0);
+    let max_chars = ((text_w / CHAR_W) as usize).max(8);
+    let text_rect = NSRect::new(NSPoint::new(text_x, y + 6.0), NSSize::new(text_w, 18.0));
+    match row {
+        TreeRow::Dir {
+            name, collapsed, ..
+        } => {
+            let arrow = if *collapsed { "\u{25B8}" } else { "\u{25BE}" };
+            draw_text(
+                arrow,
+                NSRect::new(
+                    NSPoint::new(12.0 + indent, y + 6.0),
+                    NSSize::new(14.0, 18.0),
+                ),
+                12.0,
+                0.0,
+                tok::muted(),
+            );
+            draw_text(
+                &crate::agent_ui::shorten_head(name, max_chars),
+                text_rect,
+                12.0,
+                0.3,
+                tok::text(),
+            );
+        }
+        TreeRow::File { name, status, .. } => {
+            // Etiqueta A/M/D/R: letra y color (nunca solo color).
+            draw_text_ex(
+                status.tag(),
+                NSRect::new(
+                    NSPoint::new(14.0 + indent, y + 6.0),
+                    NSSize::new(16.0, 18.0),
+                ),
+                12.0,
+                0.6,
+                status_color(*status),
+                true,
+                false,
+            );
+            draw_text(
+                &crate::agent_ui::shorten_head(name, max_chars),
+                text_rect,
+                12.0,
+                0.0,
+                tok::text(),
+            );
+        }
+    }
+    if comments > 0 {
+        let pill = NSRect::new(NSPoint::new(w - 40.0, y + 6.0), NSSize::new(26.0, 18.0));
+        fill_rounded(pill, 9.0, tok::attention(), 0.9);
+        draw_text_ex(
+            &comments.to_string(),
+            NSRect::new(
+                NSPoint::new(pill.origin.x, pill.origin.y + 1.0),
+                NSSize::new(pill.size.width - 9.0, pill.size.height),
+            ),
+            11.0,
+            0.7,
+            tok::bg(),
+            false,
+            true,
+        );
+    }
 }
 
 define_class!(
@@ -89,58 +185,31 @@ define_class!(
                 tok::muted(),
             );
             for (i, row) in self.ivars().rows.borrow().iter().enumerate() {
-                let y = LIST_HEADER_H + i as f64 * LIST_ROW_H;
-                if row.selected {
-                    let r = NSRect::new(NSPoint::new(6.0, y), NSSize::new(b.size.width - 13.0, LIST_ROW_H - 2.0));
-                    fill_rounded(r, 6.0, tok::accent(), 0.07);
-                    stroke_rounded(r, 6.0, tok::accent(), 0.5, 1.0);
-                }
-                // Etiqueta A/M/D/R: letra y color (nunca solo color).
-                draw_text_ex(
-                    row.status.tag(),
-                    NSRect::new(NSPoint::new(14.0, y + 6.0), NSSize::new(16.0, 18.0)),
-                    12.0,
-                    0.6,
-                    status_color(row.status),
-                    true,
-                    false,
-                );
-                let pill_w = if row.comments > 0 { 30.0 } else { 0.0 };
-                draw_text(
-                    &crate::agent_ui::shorten_head(&row.path, 30),
-                    NSRect::new(
-                        NSPoint::new(36.0, y + 6.0),
-                        NSSize::new(b.size.width - 36.0 - 14.0 - pill_w, 18.0),
-                    ),
-                    12.0,
-                    0.0,
-                    tok::text(),
-                );
-                if row.comments > 0 {
-                    let pill = NSRect::new(NSPoint::new(b.size.width - 40.0, y + 6.0), NSSize::new(26.0, 18.0));
-                    fill_rounded(pill, 9.0, tok::attention(), 0.9);
-                    draw_text_ex(
-                        &row.comments.to_string(),
-                        NSRect::new(
-                            NSPoint::new(pill.origin.x, pill.origin.y + 1.0),
-                            NSSize::new(pill.size.width - 9.0, pill.size.height),
-                        ),
-                        11.0,
-                        0.7,
-                        tok::bg(),
-                        false,
-                        true,
-                    );
-                }
+                draw_tree_row(b.size.width, LIST_HEADER_H + i as f64 * LIST_ROW_H, row);
             }
         }
 
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
             let p = self.convertPoint_fromView(event.locationInWindow(), None);
-            let count = self.ivars().rows.borrow().len();
-            if let (Some(i), Some(f)) = (file_at(p.y, count), self.ivars().on_select.borrow().as_ref()) {
-                f(i);
+            // Se clona la fila para soltar el préstamo antes de llamar al callback,
+            // que vuelve a pintar la lista.
+            let row = {
+                let rows = self.ivars().rows.borrow();
+                file_at(p.y, rows.len()).map(|i| rows[i].clone())
+            };
+            match row {
+                Some(TreeRow::File { index, .. }) => {
+                    if let Some(f) = self.ivars().on_select.borrow().as_ref() {
+                        f(index);
+                    }
+                }
+                Some(TreeRow::Dir { path, .. }) => {
+                    if let Some(f) = self.ivars().on_toggle.borrow().as_ref() {
+                        f(path);
+                    }
+                }
+                None => {}
             }
         }
     }
@@ -151,6 +220,7 @@ impl FileListView {
         let this = Self::alloc(mtm).set_ivars(ListIvars {
             rows: RefCell::new(Vec::new()),
             on_select: RefCell::new(None),
+            on_toggle: RefCell::new(None),
         });
         // SAFETY: inicializador designado de NSView.
         unsafe { msg_send![super(this), init] }
@@ -160,7 +230,11 @@ impl FileListView {
         *self.ivars().on_select.borrow_mut() = Some(Box::new(f));
     }
 
-    pub fn set_rows(&self, rows: Vec<FileRow>) {
+    pub fn set_on_toggle(&self, f: impl Fn(String) + 'static) {
+        *self.ivars().on_toggle.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn set_rows(&self, rows: Vec<TreeRow>) {
         if *self.ivars().rows.borrow() != rows {
             *self.ivars().rows.borrow_mut() = rows;
             self.setNeedsDisplay(true);
@@ -442,11 +516,17 @@ pub struct ReviewActions {
     pub send: Sel,
     pub pr: Sel,
     pub discard: Sel,
+    pub toggle_list: Sel,
 }
+
+/// Ancho del botón que muestra u oculta la lista de archivos.
+const TOGGLE_W: f64 = 32.0;
 
 pub struct RootIvars {
     title: Retained<NSTextField>,
     subtitle: Retained<NSTextField>,
+    toggle: Retained<NSButton>,
+    list_hidden: Cell<bool>,
     refresh: Retained<NSButton>,
     send: Retained<NSButton>,
     pr: Retained<NSButton>,
@@ -527,6 +607,8 @@ impl ReviewRoot {
         let ivars = RootIvars {
             title: small_label(mtm, 15.0, tok::text()),
             subtitle: small_label(mtm, 12.0, tok::muted()),
+            toggle: button("\u{25E7}", actions.toggle_list),
+            list_hidden: Cell::new(false),
             refresh: button("Actualizar", actions.refresh),
             send: button("Enviar comentarios a Claude", actions.send),
             pr: button("Abrir PR\u{2026}", actions.pr),
@@ -543,9 +625,13 @@ impl ReviewRoot {
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
         this.setAppearance(crate::palette::ui_appearance().as_deref());
         let iv = this.ivars();
+        iv.toggle.setToolTip(Some(&NSString::from_str(
+            "Mostrar u ocultar la lista de archivos",
+        )));
         for v in [
             &*iv.title as &NSView,
             &iv.subtitle,
+            &iv.toggle,
             &iv.refresh,
             &iv.send,
             &iv.pr,
@@ -573,9 +659,30 @@ impl ReviewRoot {
         self.relayout();
     }
 
+    /// Ancho que ocupa ahora la lista de archivos (0 si está oculta).
+    fn list_w(&self) -> f64 {
+        if self.ivars().list_hidden.get() {
+            0.0
+        } else {
+            LIST_W
+        }
+    }
+
+    pub fn list_hidden(&self) -> bool {
+        self.ivars().list_hidden.get()
+    }
+
+    /// Muestra u oculta la lista de archivos; el diff ocupa el ancho que quede.
+    pub fn set_list_hidden(&self, hidden: bool) {
+        let iv = self.ivars();
+        iv.list_hidden.set(hidden);
+        iv.list.setHidden(hidden);
+        self.relayout();
+    }
+
     /// Ancho disponible para el diff.
     pub fn diff_width(&self) -> f64 {
-        (self.bounds().size.width - LIST_W).max(200.0)
+        (self.bounds().size.width - self.list_w()).max(200.0)
     }
 
     fn relayout(&self) {
@@ -583,13 +690,14 @@ impl ReviewRoot {
         let iv = self.ivars();
         let (w, h) = (b.size.width, b.size.height);
         let body_h = (h - HEADER_H).max(0.0);
+        let list_w = self.list_w();
         iv.list.setFrame(NSRect::new(
             NSPoint::new(0.0, 0.0),
-            NSSize::new(LIST_W, body_h),
+            NSSize::new(list_w, body_h),
         ));
         iv.scroll.setFrame(NSRect::new(
-            NSPoint::new(LIST_W, 0.0),
-            NSSize::new((w - LIST_W).max(0.0), body_h),
+            NSPoint::new(list_w, 0.0),
+            NSSize::new((w - list_w).max(0.0), body_h),
         ));
         let (btn_h, margin, gap) = (28.0, 16.0, 8.0);
         let send_w = 240.0;
@@ -615,13 +723,18 @@ impl ReviewRoot {
             NSSize::new(discard_w, btn_h),
         ));
         x -= gap + discard_w;
-        let text_w = (x - margin - 16.0).max(0.0);
+        iv.toggle.setFrame(NSRect::new(
+            NSPoint::new(margin, y),
+            NSSize::new(TOGGLE_W, btn_h),
+        ));
+        let text_x = margin + TOGGLE_W + gap;
+        let text_w = (x - text_x - 16.0).max(0.0);
         iv.title.setFrame(NSRect::new(
-            NSPoint::new(margin, h - 30.0),
+            NSPoint::new(text_x, h - 30.0),
             NSSize::new(text_w, 20.0),
         ));
         iv.subtitle.setFrame(NSRect::new(
-            NSPoint::new(margin, h - 52.0),
+            NSPoint::new(text_x, h - 52.0),
             NSSize::new(text_w, 18.0),
         ));
         // El documento del diff sigue el ancho disponible.

@@ -28,6 +28,7 @@ mod quick;
 mod renderer;
 mod report;
 mod review_controller;
+mod review_tree;
 mod review_ui;
 mod session;
 mod settings_controller;
