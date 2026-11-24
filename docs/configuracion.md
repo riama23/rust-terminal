@@ -156,6 +156,32 @@ Orden para «Abrir en el editor» (⌘O) con `{path}`, `{line}` y `{col}`, por e
 - **Por defecto:** `""`
 - **Se aplica:** en vivo
 
+## `[quick_terminal]`
+
+### `enabled`
+
+Terminal rápido: un panel que baja desde el borde superior con ⌥Espacio desde cualquier aplicación. Se aplica al reiniciar. Con `false` no se reserva ⌥Espacio.
+
+- **Tipo:** `true` o `false`
+- **Por defecto:** `true`
+- **Se aplica:** pestañas nuevas
+
+### `height`
+
+Alto del terminal rápido, en puntos (como mucho el 90 % de la pantalla). Se aplica la próxima vez que aparezca.
+
+- **Tipo:** un entero (160–1600)
+- **Por defecto:** `410`
+- **Se aplica:** en vivo
+
+### `opacity`
+
+Opacidad del fondo del terminal rápido (con desenfoque detrás). Se aplica al volver a crearlo (reinicia la app o ciérralo con `exit`).
+
+- **Tipo:** un número (0.5–1)
+- **Por defecto:** `0.88`
+- **Se aplica:** pestañas nuevas
+
 ## `[ssh]`
 
 ### `production_hosts`
@@ -446,6 +472,22 @@ Mover el divisor hacia abajo. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl
 
 - **Tipo:** un texto
 - **Por defecto:** `"cmd+ctrl+down"`
+- **Se aplica:** en vivo
+
+### `quick_pin`
+
+Fijar o soltar el terminal rápido. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `"cmd+alt+p"`
+- **Se aplica:** en vivo
+
+### `quick_to_window`
+
+Mover el terminal rápido a una ventana. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `"cmd+alt+w"`
 - **Se aplica:** en vivo
 
 ### `open_settings`

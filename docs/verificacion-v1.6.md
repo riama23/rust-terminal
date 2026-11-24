@@ -1,6 +1,6 @@
 # Verificación manual: v1.6
 
-Entrega A (hecha): teclado configurable y ventana de ajustes. Entrega B (hecha): tema Paper y *Follow system*. Entrega C: badge PROD. Pendiente: quick terminal (D).
+Entrega A (hecha): teclado configurable y ventana de ajustes. Entrega B (hecha): tema Paper y *Follow system*. Entrega C (hecha): badge PROD. Entrega D: quick terminal.
 
 ## Teclado configurable
 
@@ -35,4 +35,16 @@ Entrega A (hecha): teclado configurable y ventana de ajustes. Entrega B (hecha):
 - [ ] El distintivo aparece al arrancar el comando (se vuelve a mirar el primer plano a los 0,4, 2 y 5 s, porque `ssh` no escribe nada mientras conecta) y desaparece al volver al prompt.
 - **Fuera de esta entrega:** el distintivo en la sidebar de shells (la sidebar solo lista agentes) y la *protección de producción* del editor de entrada (que pide confirmar comandos en hosts PROD); el roadmap marca el editor de entrada como fuera de alcance.
 - Comprobado: la detección con un `ssh` de mentira (un enlace a `sleep` llamado `ssh`): `prod=true` mientras corre y con el patrón que coincide, `false` si no coincide y al terminar (volcado `RT_DUMP_TABS`, solo debug); el parser de `ssh`, los patrones y el dibujo del distintivo en pestaña y cabecera (tests). Sin comprobar a mano: verlo en la ventana y con un `ssh` real.
+
+## Quick terminal (entrega D)
+
+- [ ] **⌥Espacio** desde cualquier aplicación baja un panel desde el borde superior de la pantalla donde está el ratón (16 pt de margen a los lados, 410 pt de alto por defecto) con una animación de unos 0,2 s (sin ella con *Reducir movimiento*). Volver a pulsarlo lo sube y devuelve el foco a la aplicación en la que estabas.
+- [ ] Fondo translúcido sobre un desenfoque (opacidad `quick_terminal.opacity`, 0,88); opaco con *Reducir transparencia*. Esquinas redondeadas. Se ve sobre cualquier espacio y sobre apps a pantalla completa.
+- [ ] Es una terminal completa (pestañas, splits, bloques, paleta, PROD) con sus propias shells, que **siguen vivas** al ocultarlo. La primera vez tarda un instante en crearse.
+- [ ] **Se oculta al perder el foco** (clic en otra aplicación o ventana) **salvo que esté fijado**: **⌘⌥P** (menú *Ventana*) lo fija o lo suelta y la barra de pestañas muestra «fijado». No se oculta mientras hay un diálogo de la app abierto.
+- [ ] **⌘⌥W** (*Mover el terminal rápido a una ventana*) lo convierte en una ventana normal con barra de título; el siguiente ⌥Espacio crea un terminal rápido nuevo. Si sales de la última shell del terminal rápido (`exit`), se descarta y el siguiente ⌥Espacio crea otro (no cierra la app).
+- [ ] Opciones (Ajustes → Terminal rápido): `quick_terminal.enabled` (con `false` no se reserva ⌥Espacio; se aplica al reiniciar), `height` y `opacity`. Los atajos ⌘⌥P y ⌘⌥W son configurables en `[keybindings]` (`quick_pin`, `quick_to_window`).
+- **Fuera de esta entrega:** redimensionar arrastrando la barra inferior (el alto se fija en `quick_terminal.height`) y cambiar el atajo global (⌥Espacio es fijo; ⌥Espacio también escribe un espacio sin ruptura en algunas disposiciones de teclado, por eso se puede desactivar). La *protección de producción* sigue fuera.
+- Comprobado con la app real (solo debug: `RT_OPEN_QUICK`, `RT_QUICK_STEPS`, `RT_QUICK_DUMP`): el panel aparece pegado al borde superior de la pantalla (16 pt de margen, 1648 × 410, nivel flotante) y se ve con el tema, la barra de pestañas y la shell; perder el foco lo oculta, fijado no lo oculta, y mover a ventana deja una ventana normal de 1000 × 620 y borra el terminal rápido. La geometría y las constantes de Carbon, con tests.
+- **Sin comprobar a mano:** pulsar ⌥Espacio de verdad (el registro no dio error), la animación, el desenfoque sobre otras aplicaciones, los atajos ⌘⌥P/⌘⌥W con el panel sin activar la app (es un panel que no activa la aplicación; si los atajos del menú no llegaran, habría que activar la app al mostrarlo), y devolver el foco a la aplicación anterior.
 

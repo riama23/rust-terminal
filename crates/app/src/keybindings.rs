@@ -159,6 +159,18 @@ actions![
         "cmd+ctrl+down",
         "Mover el divisor hacia abajo"
     ),
+    (
+        "quick_pin",
+        "quickPin:",
+        "cmd+alt+p",
+        "Fijar o soltar el terminal rápido"
+    ),
+    (
+        "quick_to_window",
+        "quickToWindow:",
+        "cmd+alt+w",
+        "Mover el terminal rápido a una ventana"
+    ),
     ("open_settings", "openSettings:", "cmd+,", "Ajustes"),
     (
         "report_issue",

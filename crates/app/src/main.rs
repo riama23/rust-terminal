@@ -22,6 +22,7 @@ mod palette;
 mod palette_controller;
 mod palette_ui;
 mod proc;
+mod quick;
 mod renderer;
 mod report;
 mod review_controller;
@@ -344,6 +345,18 @@ fn build_menu(app: &NSApplication, mtm: MainThreadMarker) {
         );
         window_items.push(item);
     }
+    window_items.push(menu_item(
+        mtm,
+        "Fijar o soltar el terminal rápido",
+        sel!(quickPin:),
+        "",
+    ));
+    window_items.push(menu_item(
+        mtm,
+        "Mover el terminal rápido a una ventana",
+        sel!(quickToWindow:),
+        "",
+    ));
     let zoom = menu_item(mtm, "Ampliar o restaurar el panel", sel!(toggleZoom:), "\r");
     zoom.setKeyEquivalentModifierMask(NSEventModifierFlags::Command | NSEventModifierFlags::Shift);
     window_items.push(zoom);
@@ -432,7 +445,7 @@ fn main() {
 /// Si no hay `LANG` (lo normal al abrir la app desde el Finder o el Dock),
 /// se le da a la shell un locale UTF-8 derivado del idioma del sistema. Sin
 /// él, zsh, vim o tmux trabajan en locale C y no muestran bien `ñ` ni `é`.
-fn utf8_locale_env() -> Vec<(String, String)> {
+pub(crate) fn utf8_locale_env() -> Vec<(String, String)> {
     if std::env::var_os("LANG").is_some() {
         return Vec::new();
     }
@@ -551,6 +564,10 @@ fn open_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
     view.start(waker.clone());
     // ⌃⌥N: «Nuevo agente…» desde cualquier aplicación.
     hotkey::register_new_agent(waker.clone());
+    // ⌥Espacio: el terminal rápido (se puede desactivar con `quick_terminal.enabled`).
+    if view.quick_enabled() {
+        hotkey::register_quick_terminal(waker.clone());
+    }
     // Ayuda de verificación: `RT_OPEN_SHEET=1` abre el formulario de nuevo agente.
     if std::env::var_os("RT_OPEN_SHEET").is_some() {
         view.new_agent_sheet();
@@ -564,6 +581,14 @@ fn open_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
         #[cfg(debug_assertions)]
         if let Ok(path) = std::env::var("RT_SETTINGS_CLICK") {
             view.debug_settings_click(&path);
+        }
+    }
+    // Ayuda de verificación (solo debug): `RT_OPEN_QUICK=1` muestra el terminal rápido.
+    #[cfg(debug_assertions)]
+    if std::env::var_os("RT_OPEN_QUICK").is_some() {
+        quick::toggle(mtm);
+        if let Ok(steps) = std::env::var("RT_QUICK_STEPS") {
+            quick::debug_steps(mtm, &steps, std::env::var_os("RT_QUICK_DUMP"));
         }
     }
     // Ayuda de verificación: `RT_OPEN_PALETTE=consulta` abre la paleta con esa consulta.

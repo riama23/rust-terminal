@@ -12,7 +12,7 @@ Este documento encaja el spec de producto (`docs/macOS Terminal — UI UX Spec f
 | v1.3 | Notificaciones accionables, Dock badge, menu bar extra | Hecho (rama `v1.1-contenedor`), verificación manual pendiente (`docs/verificacion-v1.3.md`) |
 | v1.4 | Review de diff, comentarios en lote, inspector | Hecho, con descartar worktree y abrir PR; verificación manual pendiente (`docs/verificacion-v1.4.md`) |
 | v1.5 | Bloques visuales, paleta de comandos, polish de splits | Hecho con dos desviaciones (ver «Estado de la v1.5»); verificación manual pendiente (`docs/verificacion-v1.5.md`) |
-| v1.6 | Ajustes, tema Paper, quick terminal, keybindings | Pendiente |
+| v1.6 | Ajustes, tema Paper, quick terminal, keybindings | Hecho (ajustes, teclado configurable, Paper y Follow system, PROD, quick terminal); verificación manual pendiente (`docs/verificacion-v1.6.md`) |
 | v2 | API de control por agentes | Sin diseñar |
 
 El eje del roadmap es **actuar sobre el agente** desde la terminal (aprobar, denegar, revisar), no ser una terminal más. Los bloques visuales y la paleta van al final.

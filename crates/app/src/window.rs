@@ -61,6 +61,8 @@ pub struct WindowFrame {
     pub dividers: Vec<[f32; 4]>,
     pub headers: Vec<PaneHeader>,
     pub tab_bar: Option<TabBar>,
+    /// Opacidad del fondo (1 salvo en el quick terminal).
+    pub opacity: f32,
     pub theme: Theme,
     pub font: FontSpec,
 }
@@ -258,6 +260,13 @@ define_class!(
             }
         }
 
+        /// ⌥Espacio: muestra u oculta el terminal rápido.
+        #[unsafe(method(globalQuickTerminal))]
+        fn global_quick_terminal(&self) {
+            let mtm = MainThreadMarker::new().expect("hilo principal");
+            crate::quick::toggle(mtm);
+        }
+
         /// ⌃⌥N: abre el formulario de nuevo agente desde cualquier app.
         #[unsafe(method(globalNewAgent))]
         fn global_new_agent(&self) {
@@ -350,6 +359,7 @@ impl RenderTarget {
             )
         });
         renderer.set_appearance(&wf.font, wf.layout.scale, wf.theme);
+        renderer.set_opacity(wf.opacity);
 
         let mut panes = Vec::with_capacity(wf.panes.len());
         let mut held = self.ivars().held.lock().unwrap();
