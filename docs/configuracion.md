@@ -68,6 +68,22 @@ Los 16 colores ANSI: negro, rojo, verde, amarillo, azul, magenta, cian, blanco y
 
 ## `[window]`
 
+### `dim_unfocused`
+
+Atenúa los paneles sin foco cuando hay varios en la pestaña.
+
+- **Tipo:** `true` o `false`
+- **Por defecto:** `true`
+- **Se aplica:** en vivo
+
+### `pane_headers`
+
+Cabecera con el título sobre cada panel cuando hay varios en la pestaña.
+
+- **Tipo:** `true` o `false`
+- **Por defecto:** `true`
+- **Se aplica:** en vivo
+
 ### `padding`
 
 Margen interior de cada panel, en puntos.

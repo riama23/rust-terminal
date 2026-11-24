@@ -104,6 +104,22 @@ pub const OPTIONS: &[OptionSpec] = &[
     },
     OptionSpec {
         section: "window",
+        key: "dim_unfocused",
+        kind: Kind::Bool,
+        default: "true",
+        apply: Apply::Live,
+        description: "Atenúa los paneles sin foco cuando hay varios en la pestaña.",
+    },
+    OptionSpec {
+        section: "window",
+        key: "pane_headers",
+        kind: Kind::Bool,
+        default: "true",
+        apply: Apply::Live,
+        description: "Cabecera con el título sobre cada panel cuando hay varios en la pestaña.",
+    },
+    OptionSpec {
+        section: "window",
         key: "padding",
         kind: Kind::Float {
             min: 0.0,
@@ -232,6 +248,8 @@ pub struct Config {
     pub shell_args: Vec<String>,
     pub shell_integration: bool,
     pub track_manual_claude: bool,
+    pub dim_unfocused: bool,
+    pub pane_headers: bool,
     pub scrollback_lines: usize,
     pub clipboard_write: bool,
     pub clipboard_read: ClipboardRead,
@@ -348,6 +366,8 @@ impl Config {
             ("colors", "selection", Value::Color(c)) => self.theme.selection = c,
             ("colors", "palette", Value::Palette(p)) => self.theme.palette = p,
             ("window", "padding", Value::Float(f)) => self.padding = f,
+            ("window", "dim_unfocused", Value::Bool(b)) => self.dim_unfocused = b,
+            ("window", "pane_headers", Value::Bool(b)) => self.pane_headers = b,
             ("shell", "program", Value::Str(s)) => {
                 self.shell_program = (!s.is_empty()).then_some(s)
             }
@@ -462,6 +482,8 @@ impl Default for Config {
             shell_args: Vec::new(),
             shell_integration: false,
             track_manual_claude: false,
+            dim_unfocused: false,
+            pane_headers: false,
             scrollback_lines: 0,
             clipboard_write: false,
             clipboard_read: ClipboardRead::Deny,

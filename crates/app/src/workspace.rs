@@ -69,6 +69,8 @@ pub struct Divider {
 pub struct Tab {
     root: Node,
     pub focused: PaneId,
+    /// Panel ampliado a toda la pestaña (⌘⇧↵). Solo cuenta mientras tenga el foco.
+    zoomed: Option<PaneId>,
 }
 
 impl Tab {
@@ -76,6 +78,7 @@ impl Tab {
         Tab {
             root: Node::Leaf(pane),
             focused: pane,
+            zoomed: None,
         }
     }
 
@@ -115,6 +118,71 @@ impl Tab {
         }
         if walk(&mut self.root, target, axis, new) {
             self.focused = new;
+            self.zoomed = None;
+        }
+    }
+
+    /// El panel con el foco ocupa toda la pestaña (o vuelve a su sitio).
+    /// Con un solo panel no hace nada.
+    pub fn toggle_zoom(&mut self) {
+        self.zoomed = match self.zoomed {
+            Some(_) => None,
+            None if self.panes().len() > 1 => Some(self.focused),
+            None => None,
+        };
+    }
+
+    /// ¿Se ve ahora un panel ampliado?
+    pub fn is_zoomed(&self) -> bool {
+        self.zoomed == Some(self.focused) && self.panes().len() > 1
+    }
+
+    /// Mueve hacia `dir` el divisor más cercano que rodea al panel con el
+    /// foco en ese eje (`step`: fracción del espacio). `false` si no hay.
+    pub fn resize_focused(&mut self, dir: Direction, step: f64) -> bool {
+        let (axis, sign) = match dir {
+            Direction::Left => (Axis::Columns, -1.0),
+            Direction::Right => (Axis::Columns, 1.0),
+            Direction::Up => (Axis::Rows, -1.0),
+            Direction::Down => (Axis::Rows, 1.0),
+        };
+        fn contains(n: &Node, pane: PaneId) -> bool {
+            match n {
+                Node::Leaf(id) => *id == pane,
+                Node::Split { a, b, .. } => contains(a, pane) || contains(b, pane),
+            }
+        }
+        // El divisor más profundo del eje que contiene al panel.
+        fn find(n: &mut Node, pane: PaneId, axis: Axis) -> Option<&mut f64> {
+            let Node::Split {
+                axis: ax,
+                ratio,
+                a,
+                b,
+            } = n
+            else {
+                return None;
+            };
+            let inner = if contains(a, pane) {
+                find(a, pane, axis)
+            } else if contains(b, pane) {
+                find(b, pane, axis)
+            } else {
+                return None;
+            };
+            match inner {
+                Some(r) => Some(r),
+                None if *ax == axis => Some(ratio),
+                None => None,
+            }
+        }
+        let focused = self.focused;
+        match find(&mut self.root, focused, axis) {
+            Some(ratio) => {
+                *ratio = (*ratio + sign * step).clamp(0.1, 0.9);
+                true
+            }
+            None => false,
         }
     }
 
@@ -146,6 +214,9 @@ impl Tab {
         walk(&mut self.root, pane);
         if self.focused == pane {
             self.focused = self.panes()[0];
+        }
+        if self.zoomed == Some(pane) {
+            self.zoomed = None;
         }
         true
     }
@@ -211,6 +282,9 @@ impl Tab {
                     path.pop();
                 }
             }
+        }
+        if self.is_zoomed() {
+            return (vec![(self.focused, area)], Vec::new());
         }
         let (mut panes, mut dividers) = (Vec::new(), Vec::new());
         walk(
@@ -550,5 +624,87 @@ mod tests {
             (1, 3),
             "un id inexistente no cambia nada"
         );
+    }
+
+    #[test]
+    fn zoom_fills_the_tab_and_only_while_focused() {
+        let area = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 50.0,
+        };
+        let mut t = Tab::new(1);
+        t.toggle_zoom();
+        assert!(!t.is_zoomed(), "con un solo panel no hay zoom");
+        t.split(1, Axis::Columns, 2);
+        assert_eq!(t.layout(area, 1.0).0.len(), 2);
+        t.toggle_zoom();
+        assert!(t.is_zoomed());
+        let (panes, dividers) = t.layout(area, 1.0);
+        assert_eq!(panes, vec![(2, area)]);
+        assert!(dividers.is_empty());
+        // Si el foco pasa a otro panel, el zoom deja de verse.
+        t.focused = 1;
+        assert_eq!(t.layout(area, 1.0).0.len(), 2);
+        t.focused = 2;
+        assert!(t.is_zoomed());
+        t.toggle_zoom();
+        assert_eq!(t.layout(area, 1.0).0.len(), 2);
+        // Dividir o cerrar el panel ampliado lo desamplía.
+        t.toggle_zoom();
+        t.split(2, Axis::Rows, 3);
+        assert!(!t.is_zoomed());
+        t.toggle_zoom();
+        t.close(3);
+        assert!(!t.is_zoomed());
+    }
+
+    #[test]
+    fn keyboard_resize_moves_the_nearest_divider_on_that_axis() {
+        let area = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 101.0,
+            h: 101.0,
+        };
+        let mut t = Tab::new(1);
+        // 1 | (2 / 3)
+        t.split(1, Axis::Columns, 2);
+        t.split(2, Axis::Rows, 3);
+        let width_of = |t: &Tab, id| {
+            t.layout(area, 1.0)
+                .0
+                .iter()
+                .find(|(p, _)| *p == id)
+                .unwrap()
+                .1
+                .w
+        };
+        let height_of = |t: &Tab, id| {
+            t.layout(area, 1.0)
+                .0
+                .iter()
+                .find(|(p, _)| *p == id)
+                .unwrap()
+                .1
+                .h
+        };
+        // Foco en 3: la división de filas es la más cercana en vertical…
+        let h = height_of(&t, 3);
+        assert!(t.resize_focused(Direction::Up, 0.1));
+        assert!(height_of(&t, 3) > h, "subir el divisor agranda el de abajo");
+        // …y en horizontal la de columnas, que rodea al panel desde fuera.
+        let w = width_of(&t, 1);
+        assert!(t.resize_focused(Direction::Right, 0.1));
+        assert!(width_of(&t, 1) > w);
+        // Con el foco en 1 no hay división de filas.
+        t.focused = 1;
+        assert!(!t.resize_focused(Direction::Down, 0.1));
+        // Los límites se respetan.
+        for _ in 0..30 {
+            t.resize_focused(Direction::Right, 0.1);
+        }
+        assert!(width_of(&t, 2) >= 9.0);
     }
 }

@@ -30,6 +30,9 @@ pub enum AppEvent {
     },
     /// Claude Code pasó a ser (o dejó de ser) el programa en primer plano.
     Claude(bool),
+    /// Un programa distinto de la shell ocupa (o dejó de ocupar) el primer
+    /// plano: la pestaña muestra su spinner.
+    Busy(bool),
 }
 
 pub struct Session {
@@ -49,6 +52,8 @@ pub struct Session {
     pub visible: AtomicBool,
     /// La shell terminó (el lector llegó al final).
     pub exited: AtomicBool,
+    /// Hay un programa en primer plano que no es la shell (lo pone el lector).
+    pub busy: AtomicBool,
     /// Eventos pendientes para la app.
     pending: Mutex<Vec<AppEvent>>,
     /// Último bloque terminado que ya se revisó (para avisar una sola vez).
@@ -99,6 +104,7 @@ impl Session {
             shell_name: shell.rsplit('/').next().unwrap_or(shell).to_owned(),
             visible: AtomicBool::new(true),
             exited: AtomicBool::new(false),
+            busy: AtomicBool::new(false),
             pending: Mutex::new(Vec::new()),
             last_finished: AtomicU64::new(0),
             long_command_secs: AtomicU64::new(opts.long_command_secs),
@@ -259,13 +265,30 @@ fn start_reader(session: Arc<Session>, mut reader: PtyReader, mut child: Child, 
                     Ok(0) | Err(_) => break,
                     Ok(n) => n,
                 };
-                let (responses, title_changed, mut events) = {
+                let (responses, title_changed, mut events, block_running) = {
                     let mut term = session.term.lock().unwrap();
                     term.advance(&buf[..n]);
                     let events = session.collect_events(&mut term);
-                    (term.take_responses(), term.take_title_changed(), events)
+                    // Con las marcas OSC 133, un comando sin terminar: un
+                    // proceso silencioso (`sleep`) no escribe nada que haga
+                    // mirar el primer plano.
+                    let running = term
+                        .blocks()
+                        .last()
+                        .is_some_and(|b| b.output.is_some() && !b.is_finished());
+                    (
+                        term.take_responses(),
+                        term.take_title_changed(),
+                        events,
+                        running,
+                    )
                 };
                 let fg = session.control.lock().unwrap().foreground_pgrp();
+                let fg_busy = fg.is_some_and(|p| p != session.pid);
+                let busy = fg_busy || block_running;
+                if busy != session.busy.swap(busy, SeqCst) {
+                    events.push(AppEvent::Busy(busy));
+                }
                 if fg != last_fg {
                     last_fg = fg;
                     let claude = fg.is_some_and(|p| p != session.pid && crate::proc::is_claude(p));

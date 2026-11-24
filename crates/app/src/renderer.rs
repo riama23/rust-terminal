@@ -238,7 +238,20 @@ pub struct PaneFrame {
     pub focused: bool,
     /// Texto en composición, que se dibuja en el cursor.
     pub preedit: Option<String>,
+    /// Panel sin foco entre varios: se pinta atenuado.
+    pub dim: bool,
 }
+
+/// Cabecera de un panel (solo con varios paneles en la pestaña).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PaneHeader {
+    pub rect: [f32; 4],
+    pub title: String,
+    pub focused: bool,
+}
+
+/// Opacidad de un panel atenuado (spec: 55 %).
+pub const DIM_OPACITY: f32 = 0.55;
 
 /// Una pestaña de la barra.
 #[derive(Debug, Clone, PartialEq)]
@@ -247,6 +260,8 @@ pub struct TabItem {
     pub rect: [f32; 4],
     pub close: [f32; 4],
     pub active: bool,
+    /// Un programa corre en la pestaña: lleva spinner.
+    pub busy: bool,
 }
 
 /// La barra de pestañas, ya maquetada en píxeles.
@@ -255,6 +270,8 @@ pub struct TabBar {
     pub rect: [f32; 4],
     pub tabs: Vec<TabItem>,
     pub plus: [f32; 4],
+    /// Fotograma del spinner (lo avanza la app mientras alguna pestaña está ocupada).
+    pub spinner_phase: usize,
 }
 
 /// Todo lo que hay que pintar en un frame.
@@ -263,6 +280,7 @@ pub struct Frame {
     pub layout: Layout,
     pub panes: Vec<PaneFrame>,
     pub dividers: Vec<[f32; 4]>,
+    pub headers: Vec<PaneHeader>,
     pub tab_bar: Option<TabBar>,
 }
 
@@ -481,10 +499,21 @@ impl Renderer {
             self.quads
                 .push(fill(*d, palette::to_rgba(palette::DIVIDER, 1.0)));
         }
+        for h in &frame.headers {
+            self.build_pane_header(h, &mut glyphs);
+        }
         if let Some(bar) = &frame.tab_bar {
             self.build_tab_bar(bar, &mut glyphs);
         }
         self.quads.extend(glyphs);
+        // Atenuado: el fondo por encima del panel (texto incluido) deja ver
+        // el contenido al 55 %.
+        for pane in frame.panes.iter().filter(|p| p.dim) {
+            self.quads.push(fill(
+                pane.rect,
+                palette::to_rgba(self.theme.background, 1.0 - DIM_OPACITY),
+            ));
+        }
     }
 
     /// Texto de una sola línea a partir de `(x, y)` (arriba a la izquierda),
@@ -525,6 +554,37 @@ impl Renderer {
         }
     }
 
+    fn build_pane_header(&mut self, header: &PaneHeader, glyphs: &mut Vec<Quad>) {
+        let m = self.fonts.metrics;
+        let (cw, ch) = (m.cell_w as f32, m.cell_h as f32);
+        let [x, y, w, h] = header.rect;
+        self.quads
+            .push(fill(header.rect, palette::to_rgba(palette::TAB_BAR, 1.0)));
+        // Línea inferior, y el acento en el panel con el foco.
+        self.quads.push(fill(
+            [x, y + h - 1.0, w, 1.0],
+            palette::to_rgba(palette::DIVIDER, 1.0),
+        ));
+        let fg = if header.focused {
+            let accent_h = (ch / 12.0).round().max(2.0);
+            self.quads.push(fill(
+                [x, y, w, accent_h],
+                palette::to_rgba(palette::ACCENT, 1.0),
+            ));
+            self.theme.foreground
+        } else {
+            palette::TAB_INACTIVE_FG
+        };
+        self.push_text(
+            &header.title,
+            x + cw,
+            y + ((h - ch) / 2.0).round(),
+            w - cw * 2.0,
+            palette::to_rgba(fg, 1.0),
+            glyphs,
+        );
+    }
+
     fn build_tab_bar(&mut self, bar: &TabBar, glyphs: &mut Vec<Quad>) {
         let m = self.fonts.metrics;
         let ch = m.cell_h as f32;
@@ -552,7 +612,19 @@ impl Renderer {
                 palette::to_rgba(palette::DIVIDER, 1.0),
             ));
             let text_y = y + ((h - ch) / 2.0).round();
-            let text_x = x + cw;
+            let mut text_x = x + cw;
+            if tab.busy {
+                const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+                self.push_text(
+                    SPINNER[bar.spinner_phase % SPINNER.len()],
+                    text_x,
+                    text_y,
+                    cw * 2.0,
+                    palette::to_rgba(palette::ACCENT, 1.0),
+                    glyphs,
+                );
+                text_x += cw * 2.0;
+            }
             let max_w = tab.close[0] - text_x - cw * 0.5;
             self.push_text(
                 &tab.title,
@@ -867,8 +939,10 @@ mod tests {
                 overlay: overlay.clone(),
                 focused: true,
                 preedit: None,
+                dim: false,
             }],
             dividers: Vec::new(),
+            headers: Vec::new(),
             tab_bar: None,
         };
         r.build_quads(&frame);
@@ -1150,6 +1224,7 @@ mod tests {
                 overlay: Overlay::default(),
                 focused,
                 preedit: (id == 1).then(|| "´".to_owned()),
+                dim: !focused,
             });
         }
         let tab_w = (cw * 28.0).floor();
@@ -1161,6 +1236,7 @@ mod tests {
                 rect: [x, 0.0, tab_w, bar_h],
                 close: [x + tab_w - close_w, 0.0, close_w, bar_h],
                 active,
+                busy: false,
             }
         };
         let frame = Frame {
@@ -1171,6 +1247,7 @@ mod tests {
             },
             panes,
             dividers: vec![[pane_w, bar_h, 2.0, pane_h]],
+            headers: Vec::new(),
             tab_bar: Some(TabBar {
                 rect: [0.0, 0.0, w, bar_h],
                 tabs: vec![
@@ -1178,6 +1255,7 @@ mod tests {
                     tab(1, "un título muy largo que no cabe en la pestaña", false),
                 ],
                 plus: [2.0 * tab_w, 0.0, bar_h, bar_h],
+                spinner_phase: 0,
             }),
         };
         // SAFETY: descriptor 2D estándar.

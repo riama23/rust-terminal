@@ -23,7 +23,7 @@ use rust_terminal_core::{Cursor, Modes, SelectionRange, Term};
 
 use crate::config::Theme;
 use crate::font::FontSpec;
-use crate::renderer::{Frame, Layout, Overlay, PaneFrame, Renderer, TabBar};
+use crate::renderer::{Frame, Layout, Overlay, PaneFrame, PaneHeader, Renderer, TabBar};
 use crate::session::Session;
 
 /// Un panel visible: su sesión, su rectángulo en píxeles y si tiene el foco.
@@ -37,6 +37,8 @@ pub struct PaneSlot {
     pub link: Option<SelectionRange>,
     /// Texto en composición (tecla muerta o método de entrada).
     pub preedit: Option<String>,
+    /// Atenuado: panel sin foco entre varios.
+    pub dim: bool,
 }
 
 /// Lo que publica el hilo principal para el render.
@@ -45,6 +47,7 @@ pub struct WindowFrame {
     pub layout: Layout,
     pub panes: Vec<PaneSlot>,
     pub dividers: Vec<[f32; 4]>,
+    pub headers: Vec<PaneHeader>,
     pub tab_bar: Option<TabBar>,
     pub theme: Theme,
     pub font: FontSpec,
@@ -309,6 +312,7 @@ impl RenderTarget {
                     overlay: overlay(&term, rows, cols, slot.link),
                     focused: slot.focused,
                     preedit: slot.preedit.clone(),
+                    dim: slot.dim,
                 });
                 continue;
             }
@@ -340,6 +344,7 @@ impl RenderTarget {
                 overlay: overlay(&term, rows, cols, slot.link),
                 focused: slot.focused,
                 preedit: slot.preedit.clone(),
+                dim: slot.dim,
             });
         }
         held.retain(|id, _| wf.panes.iter().any(|p| p.session.id == *id));
@@ -353,6 +358,7 @@ impl RenderTarget {
             layout: wf.layout,
             panes,
             dividers: wf.dividers.clone(),
+            headers: wf.headers.clone(),
             tab_bar: wf.tab_bar.clone(),
         };
         renderer.draw(&window.layer.lock(), &frame);
