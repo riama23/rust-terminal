@@ -110,7 +110,7 @@ define_class!(
                 color,
             );
             let mut x = d.origin.x + d.size.width - 16.0;
-            for scope in [Scope::History, Scope::Actions, Scope::All] {
+            for scope in [Scope::Flows, Scope::History, Scope::Actions, Scope::All] {
                 let w = 12.0 + 7.0 * scope.label().chars().count() as f64;
                 x -= w;
                 let chip = NSRect::new(NSPoint::new(x, d.origin.y + 17.0), NSSize::new(w, 22.0));
@@ -164,12 +164,16 @@ define_class!(
                     fill_rounded(r, 8.0, dusk::ACCENT, 0.12);
                     stroke_rounded(r, 8.0, dusk::ACCENT, 0.45, 1.0);
                 }
-                let tag_color = if row.tag == "ACT" { dusk::ACCENT } else { dusk::ATTENTION };
+                let tag_color = match row.tag {
+                    "ACT" => dusk::ACCENT,
+                    "FLOW" => dusk::OK,
+                    _ => dusk::ATTENTION,
+                };
                 draw_text_ex(
                     row.tag,
                     NSRect::new(
                         NSPoint::new(d.origin.x + 20.0, y + 16.0),
-                        NSSize::new(36.0, 16.0),
+                        NSSize::new(44.0, 16.0),
                     ),
                     11.0,
                     0.7,
@@ -180,7 +184,7 @@ define_class!(
                 draw_text(
                     &row.label,
                     NSRect::new(
-                        NSPoint::new(d.origin.x + 62.0, y + 6.0),
+                        NSPoint::new(d.origin.x + 70.0, y + 6.0),
                         NSSize::new(d.size.width - 82.0, 18.0),
                     ),
                     13.0,
@@ -190,7 +194,7 @@ define_class!(
                 draw_text(
                     &row.detail,
                     NSRect::new(
-                        NSPoint::new(d.origin.x + 62.0, y + 25.0),
+                        NSPoint::new(d.origin.x + 70.0, y + 25.0),
                         NSSize::new(d.size.width - 82.0, 16.0),
                     ),
                     11.0,

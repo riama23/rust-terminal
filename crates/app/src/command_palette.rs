@@ -1,9 +1,9 @@
 //! Lógica pura de la paleta de comandos (⌘⇧P): búsqueda difusa, frecuencia
 //! de uso e historial. Sin AppKit y con tests.
 //!
-//! Dos ámbitos: **Acciones** (las del menú) e **Historial** (comandos de los
-//! bloques de esta sesión y del historial de zsh). Los *flujos* del spec
-//! todavía no existen.
+//! Tres ámbitos: **Acciones** (las del menú), **Historial** (comandos de los
+//! bloques de esta sesión y del historial de zsh) y **Flujos** (comandos con
+//! nombre de `workflows.toml`).
 
 use std::collections::HashMap;
 
@@ -11,6 +11,7 @@ use std::collections::HashMap;
 pub enum Kind {
     Action,
     History,
+    Flow,
 }
 
 impl Kind {
@@ -19,6 +20,7 @@ impl Kind {
         match self {
             Kind::Action => "ACT",
             Kind::History => "CMD",
+            Kind::Flow => "FLOW",
         }
     }
 }
@@ -29,6 +31,7 @@ pub enum Scope {
     All,
     Actions,
     History,
+    Flows,
 }
 
 impl Scope {
@@ -36,7 +39,8 @@ impl Scope {
         match self {
             Scope::All => Scope::Actions,
             Scope::Actions => Scope::History,
-            Scope::History => Scope::All,
+            Scope::History => Scope::Flows,
+            Scope::Flows => Scope::All,
         }
     }
 
@@ -45,13 +49,17 @@ impl Scope {
             Scope::All => "Todo",
             Scope::Actions => "Acciones",
             Scope::History => "Historial",
+            Scope::Flows => "Flujos",
         }
     }
 
     fn admits(self, kind: Kind) -> bool {
         matches!(
             (self, kind),
-            (Scope::All, _) | (Scope::Actions, Kind::Action) | (Scope::History, Kind::History)
+            (Scope::All, _)
+                | (Scope::Actions, Kind::Action)
+                | (Scope::History, Kind::History)
+                | (Scope::Flows, Kind::Flow)
         )
     }
 }
@@ -64,6 +72,71 @@ pub struct Item {
     pub label: String,
     /// Segunda línea: atajo, o directorio, antigüedad y código de salida.
     pub detail: String,
+}
+
+/// Un flujo: un comando con nombre.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Workflow {
+    pub name: String,
+    pub command: String,
+    pub description: String,
+}
+
+/// Lee `workflows.toml`:
+///
+/// ```toml
+/// [[workflow]]
+/// name = "Tests del núcleo"
+/// command = "cargo test -p rust-terminal-core"
+/// description = "opcional"
+/// ```
+///
+/// Devuelve los flujos válidos y un aviso por cada entrada descartada (sin
+/// nombre, sin comando o con caracteres de control).
+pub fn parse_workflows(text: &str) -> (Vec<Workflow>, Vec<String>) {
+    let mut flows = Vec::new();
+    let mut problems = Vec::new();
+    let value: toml::Table = match text.parse() {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                flows,
+                vec![format!("workflows.toml no es TOML válido: {e}")],
+            );
+        }
+    };
+    let Some(entries) = value.get("workflow").and_then(|v| v.as_array()) else {
+        return (flows, problems);
+    };
+    for (i, entry) in entries.iter().enumerate() {
+        let field = |k: &str| {
+            entry
+                .get(k)
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_owned())
+                .unwrap_or_default()
+        };
+        let (name, command, description) = (field("name"), field("command"), field("description"));
+        if name.is_empty() || name.chars().count() > 80 || name.chars().any(char::is_control) {
+            problems.push(format!(
+                "flujo {}: el nombre falta, es muy largo o tiene caracteres de control",
+                i + 1
+            ));
+        } else if command.is_empty() || command.chars().count() > 500 || !insertable(&command) {
+            problems.push(format!(
+                "flujo «{name}»: el comando falta, es muy largo o tiene caracteres de control"
+            ));
+        } else if flows.iter().any(|f: &Workflow| f.name == name) {
+            problems.push(format!("flujo «{name}»: nombre repetido"));
+        } else {
+            flows.push(Workflow {
+                name,
+                command,
+                description: description.chars().filter(|c| !c.is_control()).collect(),
+            });
+        }
+    }
+    (flows, problems)
 }
 
 /// Puntuación de `query` contra `text` (más alta, mejor) o `None` si no
@@ -79,11 +152,26 @@ pub fn fuzzy_score(query: &str, text: &str) -> Option<i64> {
         return Some(0);
     }
     let t: Vec<char> = text.chars().map(fold).collect();
-    let (mut qi, mut score, mut prev_match): (usize, i64, Option<usize>) = (0, 0, None);
-    for (ti, &c) in t.iter().enumerate() {
+    // Se prueba cada posición de la primera letra y gana la mejor: así una
+    // coincidencia apretada no la tapa una anterior y dispersa.
+    let mut best: Option<i64> = None;
+    for start in (0..t.len()).filter(|&i| t[i] == q[0]) {
+        if let Some(score) = score_from(&q, &t, start) {
+            best = Some(best.map_or(score, |b| b.max(score)));
+        }
+    }
+    best
+}
+
+/// Puntuación de la subsecuencia que empieza en `start`, o `None` si no
+/// cabe o queda demasiado dispersa (más del doble de la consulta + 6 letras).
+fn score_from(q: &[char], t: &[char], start: usize) -> Option<i64> {
+    let (mut qi, mut score, mut prev): (usize, i64, Option<usize>) = (0, 0, None);
+    let mut last = start;
+    for (ti, &c) in t.iter().enumerate().skip(start) {
         if qi < q.len() && c == q[qi] {
             score += 10;
-            if prev_match == Some(ti.wrapping_sub(1)) && ti > 0 {
+            if prev.is_some_and(|p| p + 1 == ti) {
                 score += 15;
             }
             if ti == 0 || !t[ti - 1].is_alphanumeric() {
@@ -92,12 +180,17 @@ pub fn fuzzy_score(query: &str, text: &str) -> Option<i64> {
             if ti == qi {
                 score += 5;
             }
-            prev_match = Some(ti);
+            prev = Some(ti);
+            last = ti;
             qi += 1;
         }
     }
+    let span = last + 1 - start;
+    if qi < q.len() || span > q.len() * 2 + 6 {
+        return None;
+    }
     // Los textos largos puntúan un poco menos a igualdad de aciertos.
-    (qi == q.len()).then(|| score - (t.len() as i64 / 8))
+    Some(score - (t.len() as i64 / 8))
 }
 
 fn fold(c: char) -> char {
@@ -279,6 +372,13 @@ mod tests {
     #[test]
     fn fuzzy_matches_subsequences_and_prefers_tight_ones() {
         assert!(fuzzy_score("npt", "Nueva pestaña").is_some());
+        // Letras muy dispersas en un texto largo no cuentan como coincidencia…
+        assert_eq!(
+            fuzzy_score("marca", "sudo mv composer.phar /usr/local/bin/composer"),
+            None
+        );
+        // …pero una coincidencia apretada más adelante sí.
+        assert!(fuzzy_score("ab", "a xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx ab").is_some());
         assert_eq!(fuzzy_score("zz", "Nueva pestaña"), None);
         assert_eq!(fuzzy_score("", "lo que sea"), Some(0));
         // Sin mayúsculas ni acentos.
@@ -389,5 +489,53 @@ mod tests {
         assert_eq!(age_label(120), "hace 2 min");
         assert_eq!(age_label(7200), "hace 2 h");
         assert_eq!(age_label(3 * 86_400), "hace 3 d");
+    }
+
+    #[test]
+    fn workflows_are_parsed_and_bad_ones_reported() {
+        let text = r#"
+[[workflow]]
+name = "Tests del núcleo"
+command = "cargo test -p rust-terminal-core"
+description = "Rápidos"
+
+[[workflow]]
+name = "Sin comando"
+
+[[workflow]]
+name = "Con salto"
+command = "echo a\nrm -rf x"
+
+[[workflow]]
+name = "Tests del núcleo"
+command = "otro"
+
+[[workflow]]
+name = "Limpiar"
+command = "cargo clean"
+"#;
+        let (flows, problems) = parse_workflows(text);
+        let names: Vec<&str> = flows.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["Tests del núcleo", "Limpiar"]);
+        assert_eq!(flows[0].description, "Rápidos");
+        assert_eq!(problems.len(), 3, "{problems:?}");
+        // Sin sección o con TOML roto no hay flujos, y lo segundo avisa.
+        assert_eq!(parse_workflows(""), (vec![], vec![]));
+        let (none, errs) = parse_workflows("[[workflow");
+        assert!(none.is_empty() && errs.len() == 1);
+    }
+
+    #[test]
+    fn flows_have_their_own_scope() {
+        let items = vec![
+            item(Kind::Flow, "flow:Tests", "Tests"),
+            item(Kind::History, "cmd:cargo test", "cargo test"),
+        ];
+        let f = Frecency::default();
+        assert_eq!(rank(&items, "t", Scope::Flows, &f, 0, 10), vec![0]);
+        assert_eq!(rank(&items, "t", Scope::History, &f, 0, 10), vec![1]);
+        assert_eq!(Scope::History.next(), Scope::Flows);
+        assert_eq!(Scope::Flows.next(), Scope::All);
+        assert_eq!(Kind::Flow.tag(), "FLOW");
     }
 }

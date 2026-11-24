@@ -941,8 +941,10 @@ impl TerminalView {
             crate::block_ui::BlockActions {
                 stop: sel!(blockStop:),
                 rerun: sel!(blockRerun:),
+                rerun_failed: sel!(blockRerunFailed:),
                 copy: sel!(blockCopy:),
                 open: sel!(blockOpen:),
+                collapse: sel!(blockCollapse:),
             },
         );
         state.inner.borrow_mut().block_bar = Some(bar.clone());

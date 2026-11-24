@@ -231,11 +231,23 @@ fn build_menu(app: &NSApplication, mtm: MainThreadMarker) {
             ),
             menu_item(
                 mtm,
+                "Relanzar solo los tests fallidos del bloque",
+                sel!(blockRerunFailed:),
+                "",
+            ),
+            menu_item(
+                mtm,
                 "Copiar la salida del bloque seleccionado",
                 sel!(blockCopy:),
                 "",
             ),
             menu_item(mtm, "Detener el bloque en ejecución", sel!(blockStop:), ""),
+            menu_item(
+                mtm,
+                "Colapsar o expandir la salida del bloque",
+                sel!(blockCollapse:),
+                "",
+            ),
             menu_item(
                 mtm,
                 "Abrir el error del bloque en el editor",

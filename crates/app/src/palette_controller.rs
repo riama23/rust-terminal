@@ -36,6 +36,8 @@ struct Inner {
     actions: Vec<(String, Sel)>,
     /// Lo que se está enseñando, fila a fila.
     shown: Vec<Item>,
+    /// Comando de cada flujo, por su clave.
+    flows: Vec<(String, String)>,
     frecency: Frecency,
 }
 
@@ -64,11 +66,21 @@ fn action_table() -> Vec<(&'static str, &'static str, Sel)> {
         ("Bloque siguiente", "⌘↓", sel!(nextBlock:)),
         ("Relanzar el bloque seleccionado", "", sel!(blockRerun:)),
         (
+            "Relanzar solo los tests fallidos del bloque",
+            "",
+            sel!(blockRerunFailed:),
+        ),
+        (
             "Copiar la salida del bloque seleccionado",
             "",
             sel!(blockCopy:),
         ),
         ("Detener el bloque en ejecución", "", sel!(blockStop:)),
+        (
+            "Colapsar o expandir la salida del bloque",
+            "",
+            sel!(blockCollapse:),
+        ),
         (
             "Abrir el error del bloque en el editor",
             "⌘O",
@@ -95,6 +107,13 @@ fn frecency_path() -> PathBuf {
         .parent()
         .map(|p| p.join("palette-frecency.tsv"))
         .unwrap_or_else(|| PathBuf::from("palette-frecency.tsv"))
+}
+
+fn workflows_path() -> PathBuf {
+    crate::config::Config::path()
+        .parent()
+        .map(|p| p.join("workflows.toml"))
+        .unwrap_or_else(|| PathBuf::from("workflows.toml"))
 }
 
 fn load_frecency() -> Frecency {
@@ -239,6 +258,30 @@ impl TerminalView {
     fn palette_items(&self) -> (Vec<Item>, Vec<(String, Sel)>) {
         let mut items = Vec::new();
         let mut actions = Vec::new();
+        let (flows, problems) = std::fs::read_to_string(workflows_path())
+            .map(|t| cp::parse_workflows(&t))
+            .unwrap_or_default();
+        for p in &problems {
+            eprintln!("workflows.toml: {p}");
+        }
+        {
+            let mut inner = self.palette_ctl().inner.borrow_mut();
+            inner.flows.clear();
+            for f in flows {
+                let key = format!("flow:{}", f.name);
+                inner.flows.push((key.clone(), f.command.clone()));
+                items.push(Item {
+                    kind: Kind::Flow,
+                    key,
+                    label: f.name,
+                    detail: if f.description.is_empty() {
+                        f.command
+                    } else {
+                        format!("{} · {}", f.description, f.command)
+                    },
+                });
+            }
+        }
         for (label, shortcut, selector) in action_table() {
             let key = format!("act:{}", selector.name().to_string_lossy());
             items.push(Item {
@@ -385,8 +428,19 @@ impl TerminalView {
                         .sendAction_to_from(selector, None, None);
                 }
             }
-            (Kind::History, _) => {
-                let command = item.key.strip_prefix("cmd:").unwrap_or("").to_owned();
+            (Kind::History | Kind::Flow, _) => {
+                let command = if item.kind == Kind::Flow {
+                    self.palette_ctl()
+                        .inner
+                        .borrow()
+                        .flows
+                        .iter()
+                        .find(|(k, _)| *k == item.key)
+                        .map(|(_, c)| c.clone())
+                        .unwrap_or_default()
+                } else {
+                    item.key.strip_prefix("cmd:").unwrap_or("").to_owned()
+                };
                 if self.palette_send(&command, insert) {
                     self.palette_record(&item.key);
                 }

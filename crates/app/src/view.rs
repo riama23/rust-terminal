@@ -97,6 +97,8 @@ pub struct ViewIvars {
     spinner_running: Cell<bool>,
     /// Bloque seleccionado con ⌘↑/⌘↓: panel e identificador.
     pub(crate) selected_block: Cell<Option<(PaneId, u64)>>,
+    /// Bloques colapsados (panel e identificador).
+    pub(crate) collapsed_blocks: RefCell<std::collections::HashSet<(PaneId, u64)>>,
     /// Agentes de Claude Code de esta ventana (sidebar y attention bar).
     pub(crate) agents: crate::agent_controller::AgentController,
     /// La paleta de comandos (⌘⇧P).
@@ -294,12 +296,22 @@ define_class!(
             self.block_rerun();
         }
 
+        #[unsafe(method(blockRerunFailed:))]
+        fn block_rerun_failed_action(&self, _sender: Option<&AnyObject>) {
+            self.block_rerun_failed();
+        }
+
         #[unsafe(method(blockCopy:))]
         fn block_copy_action(&self, _sender: Option<&AnyObject>) {
             self.block_copy();
         }
 
         /// ⌘O: el primer `archivo:línea` de la salida del bloque, en el editor.
+        #[unsafe(method(blockCollapse:))]
+        fn block_collapse_action(&self, _sender: Option<&AnyObject>) {
+            self.block_toggle_collapse();
+        }
+
         #[unsafe(method(blockOpen:))]
         fn block_open_action(&self, _sender: Option<&AnyObject>) {
             self.block_open_in_editor();
@@ -633,6 +645,7 @@ impl TerminalView {
             spinner_phase: Cell::new(0),
             spinner_running: Cell::new(false),
             selected_block: Cell::new(None),
+            collapsed_blocks: Default::default(),
             agents: Default::default(),
             palette: Default::default(),
         });
@@ -678,6 +691,10 @@ impl TerminalView {
 
     pub(crate) fn set_block_selected(&self, sel: Option<(PaneId, u64)>) {
         self.ivars().selected_block.set(sel);
+    }
+
+    pub(crate) fn ivars_collapsed(&self) -> &RefCell<std::collections::HashSet<(PaneId, u64)>> {
+        &self.ivars().collapsed_blocks
     }
 
     /// `(blocks.visual, blocks.editor)`.
@@ -1139,6 +1156,7 @@ impl TerminalView {
         let dim_unfocused = self.ivars().config.borrow().dim_unfocused;
         let block_visual = self.ivars().config.borrow().block_visual;
         let selected_block = self.ivars().selected_block.get();
+        let collapsed = self.ivars().collapsed_blocks.borrow().clone();
         let sessions = self.ivars().sessions.borrow();
         let mut slots = Vec::new();
         for (id, r) in &g.panes {
@@ -1154,6 +1172,11 @@ impl TerminalView {
                 blocks: crate::window::BlockView {
                     visual: block_visual,
                     selected: selected_block.filter(|(p, _)| p == id).map(|(_, b)| b),
+                    collapsed: collapsed
+                        .iter()
+                        .filter(|(p, _)| p == id)
+                        .map(|(_, b)| *b)
+                        .collect(),
                 },
                 link: self
                     .ivars()
@@ -1267,7 +1290,34 @@ impl TerminalView {
         let Some(m) = g.metrics else { return (0, 0) };
         let row = ((y - r.y - g.pad) / m.cell_h as f64).floor() as isize;
         let col = ((x - r.x - g.pad) / m.cell_w as f64).floor().max(0.0) as usize;
+        // Con bloques colapsados, la fila de pantalla no es la de la vista.
+        let row = match g.panes.iter().find(|(_, pr)| *pr == r).map(|(id, _)| *id) {
+            Some(id) if row >= 0 => self
+                .collapsed_row_of(id, row as usize)
+                .map_or(row, |v| v as isize),
+            _ => row,
+        };
         (row, col)
+    }
+
+    /// Fila de la vista que hay en la fila de pantalla `screen_row` de un
+    /// panel con bloques colapsados (`None`: no hay ninguno).
+    fn collapsed_row_of(&self, pane: PaneId, screen_row: usize) -> Option<usize> {
+        let ids: Vec<u64> = self
+            .ivars()
+            .collapsed_blocks
+            .borrow()
+            .iter()
+            .filter(|(p, _)| *p == pane)
+            .map(|(_, b)| *b)
+            .collect();
+        if ids.is_empty() {
+            return None;
+        }
+        let session = self.session(pane)?;
+        let term = session.term.lock().unwrap();
+        let map = crate::window::block_row_map(&term, term.grid().rows(), &ids);
+        (!map.is_identity()).then(|| map.view_of(screen_row))
     }
 
     fn handle_scroll(&self, event: &NSEvent) {

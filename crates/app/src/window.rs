@@ -43,12 +43,14 @@ pub struct PaneSlot {
 }
 
 /// Cómo se ven los bloques de un panel.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub struct BlockView {
     /// Teñir los bloques fallidos y el seleccionado (`blocks.visual`).
     pub visual: bool,
     /// Identificador del bloque seleccionado.
     pub selected: Option<u64>,
+    /// Bloques colapsados de este panel.
+    pub collapsed: Vec<u64>,
 }
 
 /// Lo que publica el hilo principal para el render.
@@ -107,7 +109,7 @@ fn overlay(
     rows: usize,
     cols: usize,
     link: Option<SelectionRange>,
-    view: BlockView,
+    view: &BlockView,
 ) -> Overlay {
     let mut overlay = Overlay::default();
     if let Some(range) = link {
@@ -157,7 +159,26 @@ fn overlay(
             });
         }
     }
+    // Bloques colapsados: filas ocultas y resumen (la rejilla no cambia).
+    if view.visual {
+        overlay.row_map = block_row_map(term, rows, &view.collapsed);
+    }
     overlay
+}
+
+/// El mapa de filas de una vista con los bloques `collapsed` plegados. Vacío
+/// en la pantalla alternativa y cuando no hay nada que ocultar.
+pub fn block_row_map(term: &Term, rows: usize, collapsed: &[u64]) -> crate::blocks::RowMap {
+    if collapsed.is_empty() || rows == 0 || term.modes().alt_screen {
+        return Default::default();
+    }
+    let collapses: Vec<crate::blocks::Collapse> = term
+        .blocks()
+        .iter()
+        .filter(|b| collapsed.contains(&b.id))
+        .filter_map(|b| crate::blocks::collapse_of(b.output?.line, b.end.map(|e| (e.line, e.col))))
+        .collect();
+    crate::blocks::row_map(&collapses, term.visible_line(0), rows)
 }
 
 struct SendLink(Retained<CADisplayLink>);
@@ -350,7 +371,7 @@ impl RenderTarget {
                     pad: slot.pad,
                     cursor,
                     modes,
-                    overlay: overlay(&term, rows, cols, slot.link, slot.blocks),
+                    overlay: overlay(&term, rows, cols, slot.link, &slot.blocks),
                     focused: slot.focused,
                     preedit: slot.preedit.clone(),
                     dim: slot.dim,
@@ -382,7 +403,7 @@ impl RenderTarget {
                 pad: slot.pad,
                 cursor,
                 modes,
-                overlay: overlay(&term, rows, cols, slot.link, slot.blocks),
+                overlay: overlay(&term, rows, cols, slot.link, &slot.blocks),
                 focused: slot.focused,
                 preedit: slot.preedit.clone(),
                 dim: slot.dim,
