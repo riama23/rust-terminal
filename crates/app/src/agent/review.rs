@@ -135,11 +135,14 @@ impl Review {
         self.comments.iter().filter(|c| c.file == file).count()
     }
 
-    pub fn comments_at(&self, file: &str, side: Side, line: u32) -> impl Iterator<Item = &Comment> {
-        let file = file.to_owned();
+    /// Índices (en `comments()`) de los comentarios de una línea.
+    pub fn comment_indices_at(&self, file: &str, side: Side, line: u32) -> Vec<usize> {
         self.comments
             .iter()
-            .filter(move |c| c.file == file && c.side == side && c.line == line)
+            .enumerate()
+            .filter(|(_, c)| c.file == file && c.side == side && c.line == line)
+            .map(|(i, _)| i)
+            .collect()
     }
 
     pub fn totals(&self) -> (usize, usize, usize) {
@@ -210,21 +213,108 @@ pub fn can_send(status: &Status) -> Result<(), &'static str> {
 const PASTE_START: &[u8] = b"\x1b[200~";
 const PASTE_END: &[u8] = b"\x1b[201~";
 
-/// Los bytes que se escriben en la PTY: el mensaje y, aparte, Intro. Con
-/// pegado entre corchetes los saltos de línea no envían nada; sin él, el
-/// mensaje va en una sola línea para que un salto no lo envíe a medias.
-pub fn pty_payload(message: &str, bracketed_paste: bool) -> Vec<u8> {
+/// Intro: se escribe **aparte** y un instante después del pegado (si no, la
+/// interfaz de Claude Code puede tratarlo como parte del pegado).
+pub const SUBMIT: &[u8] = b"\r";
+
+/// Los bytes del mensaje, sin el Intro. Con pegado entre corchetes los saltos
+/// de línea no envían nada; sin él, el mensaje va en una sola línea para que
+/// un salto no lo envíe a medias.
+pub fn pty_paste(message: &str, bracketed_paste: bool) -> Vec<u8> {
     let clean = sanitize(message);
-    let mut out = Vec::new();
     if bracketed_paste {
+        let mut out = Vec::with_capacity(clean.len() + 12);
         out.extend_from_slice(PASTE_START);
         out.extend_from_slice(clean.as_bytes());
         out.extend_from_slice(PASTE_END);
+        out
     } else {
-        out.extend_from_slice(clean.replace('\n', " ").as_bytes());
+        clean.replace('\n', " ").into_bytes()
     }
-    out.push(b'\r');
+}
+
+// --- Filas del diff ---
+
+/// Alto de una fila, en puntos.
+pub const ROW_H: f64 = 20.0;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Row {
+    Hunk(String),
+    Line {
+        kind: LineKind,
+        old: Option<u32>,
+        new: Option<u32>,
+        text: String,
+    },
+    /// Una línea de un comentario (los de varias líneas ocupan varias filas).
+    Comment {
+        index: usize,
+        text: String,
+        first: bool,
+    },
+}
+
+impl Row {
+    /// Dónde se puede dejar un comentario a partir de esta fila.
+    pub fn commentable(&self) -> Option<(Side, u32)> {
+        match self {
+            Row::Line {
+                kind: LineKind::Del,
+                old: Some(n),
+                ..
+            } => Some((Side::Old, *n)),
+            Row::Line { new: Some(n), .. } => Some((Side::New, *n)),
+            _ => None,
+        }
+    }
+}
+
+/// Las filas de un archivo con sus comentarios intercalados bajo su línea.
+pub fn rows(file: &DiffFile, review: &Review) -> Vec<Row> {
+    let mut out = Vec::new();
+    if file.binary {
+        out.push(Row::Hunk(
+            "Archivo binario: no hay diff que mostrar.".into(),
+        ));
+    }
+    for hunk in &file.hunks {
+        out.push(Row::Hunk(hunk.header.clone()));
+        for l in &hunk.lines {
+            out.push(Row::Line {
+                kind: l.kind,
+                old: l.old,
+                new: l.new,
+                text: l.text.clone(),
+            });
+            let anchor = match (l.kind, l.old, l.new) {
+                (LineKind::Del, Some(n), _) => Some((Side::Old, n)),
+                (_, _, Some(n)) => Some((Side::New, n)),
+                _ => None,
+            };
+            if let Some((side, n)) = anchor {
+                for index in review.comment_indices_at(&file.path, side, n) {
+                    for (i, text) in review.comments()[index].text.lines().enumerate() {
+                        out.push(Row::Comment {
+                            index,
+                            text: text.to_owned(),
+                            first: i == 0,
+                        });
+                    }
+                }
+            }
+        }
+    }
     out
+}
+
+/// Fila bajo la coordenada `y` (de arriba abajo, sin desplazamiento).
+pub fn row_at(y: f64, count: usize) -> Option<usize> {
+    if y < 0.0 {
+        return None;
+    }
+    let i = (y / ROW_H) as usize;
+    (i < count).then_some(i)
 }
 
 #[cfg(test)]
@@ -394,11 +484,10 @@ mod tests {
     }
 
     #[test]
-    fn el_payload_envuelve_el_pegado_y_termina_con_intro_aparte() {
-        let p = pty_payload("a\nb", true);
-        assert_eq!(p, b"\x1b[200~a\nb\x1b[201~\r");
-        let sin = pty_payload("a\nb", false);
-        assert_eq!(sin, b"a b\r");
+    fn el_pegado_va_entre_corchetes_y_sin_ellos_en_una_linea() {
+        assert_eq!(pty_paste("a\nb", true), b"\x1b[200~a\nb\x1b[201~");
+        assert_eq!(pty_paste("a\nb", false), b"a b");
+        assert_eq!(SUBMIT, b"\r");
     }
 
     #[test]
@@ -406,8 +495,8 @@ mod tests {
         let mut r = review();
         r.add_comment("b.rs", Side::New, 5, "mal\x1b[201~\rrm -rf ~\x03")
             .unwrap();
-        let p = pty_payload(&r.message().unwrap(), true);
-        let cuerpo = &p[PASTE_START.len()..p.len() - PASTE_END.len() - 1];
+        let p = pty_paste(&r.message().unwrap(), true);
+        let cuerpo = &p[PASTE_START.len()..p.len() - PASTE_END.len()];
         assert!(!cuerpo.contains(&0x1b), "ningún ESC dentro del pegado");
         assert!(!cuerpo.contains(&b'\r') && !cuerpo.contains(&0x03));
         assert_eq!(
@@ -415,5 +504,67 @@ mod tests {
             2,
             "solo los dos del envoltorio"
         );
+    }
+
+    #[test]
+    fn las_filas_intercalan_los_comentarios_bajo_su_linea() {
+        let mut r = review();
+        r.add_comment("src/a.rs", Side::New, 2, "primera\nsegunda")
+            .unwrap();
+        r.add_comment("src/a.rs", Side::Old, 2, "borrada").unwrap();
+        let rows = rows(&r.files[0], &r);
+        let kinds: Vec<String> = rows
+            .iter()
+            .map(|r| match r {
+                Row::Hunk(_) => "H".to_owned(),
+                Row::Line { kind, .. } => format!("{:?}", kind).chars().next().unwrap().to_string(),
+                Row::Comment { first, .. } => {
+                    if *first {
+                        "c".to_owned()
+                    } else {
+                        "·".to_owned()
+                    }
+                }
+            })
+            .collect();
+        // Hunk, contexto, borrada + su comentario, añadida + comentario de 2 filas, contexto.
+        assert_eq!(kinds.join(""), "HCDcA".to_owned() + "c·" + "C");
+    }
+
+    #[test]
+    fn donde_se_puede_comentar() {
+        let r = review();
+        let rows = rows(&r.files[0], &r);
+        let c: Vec<_> = rows.iter().map(Row::commentable).collect();
+        assert_eq!(c[0], None, "la cabecera del bloque");
+        assert_eq!(c[1], Some((Side::New, 1)), "contexto");
+        assert_eq!(c[2], Some((Side::Old, 2)), "borrada");
+        assert_eq!(c[3], Some((Side::New, 2)), "añadida");
+        assert_eq!(
+            Row::Comment {
+                index: 0,
+                text: String::new(),
+                first: true
+            }
+            .commentable(),
+            None
+        );
+    }
+
+    #[test]
+    fn un_binario_se_explica_en_vez_de_quedar_en_blanco() {
+        let f = parse("diff --git a/i.png b/i.png\nBinary files a/i.png and b/i.png differ\n");
+        let r = Review::new(f);
+        let rs = rows(&r.files[0], &r);
+        assert!(matches!(&rs[0], Row::Hunk(t) if t.contains("binario")));
+    }
+
+    #[test]
+    fn localiza_la_fila_por_coordenada() {
+        assert_eq!(row_at(-1.0, 3), None);
+        assert_eq!(row_at(0.0, 3), Some(0));
+        assert_eq!(row_at(ROW_H * 2.0 + 1.0, 3), Some(2));
+        assert_eq!(row_at(ROW_H * 3.0, 3), None);
+        assert_eq!(row_at(5.0, 0), None);
     }
 }

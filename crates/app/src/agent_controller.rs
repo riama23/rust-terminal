@@ -24,7 +24,10 @@ use crate::agent::hub::Hub;
 use crate::agent::launch::{self, LaunchSpec};
 use crate::agent::model::Status;
 use crate::agent::rules;
-use crate::agent_ui::{ATTENTION_BAR_HEIGHT, AttentionBar, SIDEBAR_WIDTH, SidebarRow, SidebarView};
+use crate::agent_ui::{
+    ATTENTION_BAR_HEIGHT, AttentionBar, ChangeRow, DONE_BAR_HEIGHT, DoneBar, INSPECTOR_WIDTH,
+    InspectorData, InspectorView, SIDEBAR_WIDTH, SidebarRow, SidebarView,
+};
 use crate::container::ContainerView;
 use crate::palette::dusk;
 use crate::view::TerminalView;
@@ -37,6 +40,43 @@ const PERMISSION_DEADLINE: Duration = Duration::from_secs(300);
 #[derive(Default)]
 pub struct AgentController {
     inner: RefCell<Inner>,
+    /// La ventana de Review abierta (una a la vez).
+    pub(crate) review: RefCell<Option<crate::review_controller::ReviewState>>,
+}
+
+impl AgentController {
+    pub(crate) fn hub_ref(&self) -> std::cell::Ref<'_, Hub> {
+        std::cell::Ref::map(self.inner.borrow(), |i| &i.hub)
+    }
+
+    /// Carpeta donde trabaja el agente (el worktree o el proyecto).
+    pub(crate) fn workdir_of(&self, key: &str) -> Option<PathBuf> {
+        self.inner.borrow().workdirs.get(key).cloned()
+    }
+
+    pub(crate) fn title_of(&self, key: &str) -> Option<String> {
+        self.inner
+            .borrow()
+            .hub
+            .sessions()
+            .iter()
+            .find(|s| s.key == key)
+            .map(|s| s.title.clone())
+    }
+
+    pub(crate) fn status_of(&self, key: &str) -> Option<Status> {
+        self.inner
+            .borrow()
+            .hub
+            .sessions()
+            .iter()
+            .find(|s| s.key == key)
+            .map(|s| s.status.clone())
+    }
+
+    pub(crate) fn pane_of(&self, key: &str) -> Option<PaneId> {
+        self.inner.borrow().hub.pane_of(key)
+    }
 }
 
 #[derive(Default)]
@@ -48,10 +88,18 @@ struct Inner {
     dir: Option<PathBuf>,
     /// Proyecto desde el que se lanzó cada agente (donde va *Siempre permitir*).
     projects: HashMap<AgentKey, PathBuf>,
+    /// Dónde trabaja cada agente: su worktree o, sin él, el proyecto.
+    workdirs: HashMap<AgentKey, PathBuf>,
     sidebar: Option<Retained<SidebarView>>,
     sidebar_shown: bool,
     bar: Option<Retained<AttentionBar>>,
-    bar_shown: bool,
+    /// Qué ocupa el hueco bajo la terminal (la de atención manda sobre la de terminado).
+    bottom: Bottom,
+    done_bar: Option<Retained<DoneBar>>,
+    inspector: Option<Retained<InspectorView>>,
+    inspector_shown: bool,
+    /// Último diff calculado de cada agente: cambios y rama.
+    changes: HashMap<AgentKey, (Vec<ChangeRow>, Option<String>)>,
     /// Dentro de `refresh_agent_ui`: tocar el contenedor recoloca la terminal,
     /// que vuelve a pedir un refresco. Sin esta guarda, recursión infinita.
     refreshing: bool,
@@ -61,6 +109,16 @@ struct Inner {
     status_signature: Vec<String>,
     /// Último número puesto en el badge del Dock.
     badge: usize,
+    /// `RT_REVIEW_AUTOSEND` (solo debug): ya se disparó la revisión automática.
+    autosend_fired: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Bottom {
+    #[default]
+    None,
+    Attention,
+    Done,
 }
 
 fn status_color(status: &Status) -> [u8; 3] {
@@ -180,6 +238,13 @@ impl TerminalView {
             .unwrap_or_else(|| first_words(&spec.task, 40));
         {
             let mut inner = state.inner.borrow_mut();
+            let workdir = match &spec.isolation {
+                launch::Isolation::NewWorktree(name) => {
+                    project.join(".claude").join("worktrees").join(name)
+                }
+                launch::Isolation::CurrentFolder => project.clone(),
+            };
+            inner.workdirs.insert(broker_key.clone(), workdir);
             inner.projects.insert(broker_key.clone(), project);
             inner.hub.add(broker_key, title, pane);
         }
@@ -196,6 +261,7 @@ impl TerminalView {
             launch::remove_agent_files(dir, key);
         }
         inner.projects.remove(key);
+        inner.workdirs.remove(key);
         inner.hub.remove(key);
     }
 
@@ -247,6 +313,16 @@ impl TerminalView {
             std::mem::take(&mut *inner.queue.lock().unwrap())
         };
         let active = NSApplication::sharedApplication(self.mtm()).isActive();
+        let done_before: std::collections::HashSet<AgentKey> = {
+            let inner = self.agents().inner.borrow();
+            inner
+                .hub
+                .sessions()
+                .iter()
+                .filter(|s| s.status == Status::Done)
+                .map(|s| s.key.clone())
+                .collect()
+        };
         let mut changed = false;
         let mut alerts = Vec::new();
         {
@@ -260,6 +336,21 @@ impl TerminalView {
         for alert in &alerts {
             crate::notify::notify_agent(alert);
         }
+        // Un turno que acaba de terminar: se calcula qué cambió.
+        let newly_done: Vec<AgentKey> = {
+            let inner = self.agents().inner.borrow();
+            inner
+                .hub
+                .sessions()
+                .iter()
+                .filter(|s| s.status == Status::Done && !done_before.contains(&s.key))
+                .map(|s| s.key.clone())
+                .collect()
+        };
+        for key in newly_done {
+            self.load_changes_async(&key);
+        }
+        self.autosend_for_tests();
         if changed {
             self.refresh_agent_ui();
         }
@@ -420,6 +511,27 @@ impl TerminalView {
         self.focus_agent(key);
     }
 
+    /// `RT_REVIEW_AUTOSEND=1` (solo debug): cuando el agente termina su turno,
+    /// abre la revisión; `review_ready` la envía. Verifica el envío sin pulsar.
+    fn autosend_for_tests(&self) {
+        if !cfg!(debug_assertions) || std::env::var_os("RT_REVIEW_AUTOSEND").is_none() {
+            return;
+        }
+        let ready = {
+            let mut inner = self.agents().inner.borrow_mut();
+            let done = inner
+                .hub
+                .sessions()
+                .iter()
+                .any(|s| s.status == Status::Done);
+            done && !std::mem::replace(&mut inner.autosend_fired, true)
+        };
+        if ready {
+            // Antes de que haya turno terminado el envío debe rechazarse: se prueba aparte.
+            self.open_review();
+        }
+    }
+
     /// `RT_AUTO_DECIDE=allow|deny`: contesta solo la petición pendiente, por la
     /// misma vía que los botones. **Solo en compilaciones debug**: una variable
     /// de entorno que auto-permite no puede existir en el binario de uso.
@@ -488,10 +600,20 @@ impl TerminalView {
         {
             crate::agent_ui::snapshot_png(s, &dir.join("sidebar.png").to_string_lossy());
         }
-        if inner.bar_shown
+        if inner.bottom == Bottom::Attention
             && let Some(b) = &inner.bar
         {
             crate::agent_ui::snapshot_png(b, &dir.join("bar.png").to_string_lossy());
+        }
+        if inner.bottom == Bottom::Done
+            && let Some(b) = &inner.done_bar
+        {
+            crate::agent_ui::snapshot_png(b, &dir.join("done.png").to_string_lossy());
+        }
+        if inner.inspector_shown
+            && let Some(i) = &inner.inspector
+        {
+            crate::agent_ui::snapshot_png(i, &dir.join("inspector.png").to_string_lossy());
         }
     }
 
@@ -521,23 +643,111 @@ impl TerminalView {
             container.set_left(None);
         }
 
-        // Attention bar: la petición pendiente del panel con el foco.
-        match pending {
-            Some(req) => {
+        // Datos del agente del panel con el foco (para la barra y el inspector).
+        let info = {
+            let inner = state.inner.borrow();
+            inner.hub.session_of_pane(focused).map(|s| {
+                let changes = inner.changes.get(&s.key).cloned();
+                let workdir = inner.workdirs.get(&s.key).cloned().unwrap_or_default();
+                (s.clone(), changes, workdir)
+            })
+        };
+
+        // Barra inferior: un permiso pendiente manda sobre el aviso de terminado.
+        let done_summary = info.as_ref().and_then(|(s, changes, _)| {
+            if s.status != Status::Done {
+                return None;
+            }
+            let (rows, _) = changes.as_ref()?;
+            (!rows.is_empty()).then(|| done_text(rows))
+        });
+        let want = if pending.is_some() {
+            Bottom::Attention
+        } else if done_summary.is_some() {
+            Bottom::Done
+        } else {
+            Bottom::None
+        };
+        match (&pending, &done_summary) {
+            (Some(req), _) => {
                 let bar = self.ensure_bar();
-                let detail = req.detail();
                 let can_always = rules::rule_for(&req.tool_name, &req.tool_input).is_some();
-                bar.set_request(&req.tool_name, &detail, can_always);
-                if !std::mem::replace(&mut state.inner.borrow_mut().bar_shown, true) {
-                    container.set_bottom(Some((&bar, ATTENTION_BAR_HEIGHT)));
+                bar.set_request(&req.tool_name, &req.detail(), can_always);
+            }
+            (None, Some(text)) => self.ensure_done_bar().set_summary(text),
+            (None, None) => {}
+        }
+        let previous = std::mem::replace(&mut state.inner.borrow_mut().bottom, want);
+        if previous != want {
+            match want {
+                Bottom::Attention => {
+                    container.set_bottom(Some((&self.ensure_bar(), ATTENTION_BAR_HEIGHT)))
+                }
+                Bottom::Done => {
+                    container.set_bottom(Some((&self.ensure_done_bar(), DONE_BAR_HEIGHT)))
+                }
+                Bottom::None => container.set_bottom(None),
+            }
+        }
+
+        // Inspector: a la derecha mientras el panel con el foco sea un agente y
+        // quepa (las columnas se pliegan en ventanas estrechas).
+        let sidebar_on = state.inner.borrow().sidebar_shown;
+        let fits = crate::agent_ui::inspector_fits(container.bounds().size.width, sidebar_on);
+        match info.filter(|_| fits) {
+            Some((s, changes, workdir)) => {
+                let inspector = self.ensure_inspector();
+                inspector.set_data(InspectorData {
+                    todos: s.todos.clone(),
+                    changes: changes.as_ref().map(|(rows, _)| rows.clone()),
+                    context_percent: s.telemetry.context_percent,
+                    worktree: workdir.display().to_string(),
+                    branch: s
+                        .telemetry
+                        .branch
+                        .clone()
+                        .or_else(|| changes.and_then(|(_, b)| b)),
+                });
+                if !std::mem::replace(&mut state.inner.borrow_mut().inspector_shown, true) {
+                    container.set_right(Some((&inspector, INSPECTOR_WIDTH)));
                 }
             }
             None => {
-                if std::mem::replace(&mut state.inner.borrow_mut().bar_shown, false) {
-                    container.set_bottom(None);
+                if std::mem::replace(&mut state.inner.borrow_mut().inspector_shown, false) {
+                    container.set_right(None);
                 }
             }
         }
+    }
+
+    fn ensure_done_bar(&self) -> Retained<DoneBar> {
+        let state = self.agents();
+        if let Some(b) = state.inner.borrow().done_bar.clone() {
+            return b;
+        }
+        let bar = DoneBar::new(self.mtm(), self.as_ref(), sel!(reviewChanges:));
+        state.inner.borrow_mut().done_bar = Some(bar.clone());
+        bar
+    }
+
+    fn ensure_inspector(&self) -> Retained<InspectorView> {
+        let state = self.agents();
+        if let Some(i) = state.inner.borrow().inspector.clone() {
+            return i;
+        }
+        let inspector = InspectorView::new(self.mtm());
+        state.inner.borrow_mut().inspector = Some(inspector.clone());
+        inspector
+    }
+
+    /// Guarda el diff calculado de un agente (inspector y barra de terminado).
+    pub fn set_agent_changes(&self, key: &str, rows: Vec<ChangeRow>, branch: Option<String>) {
+        self.agents()
+            .inner
+            .borrow_mut()
+            .changes
+            .insert(key.to_owned(), (rows, branch));
+        self.refresh_agent_ui();
     }
 
     fn ensure_sidebar(&self) -> Retained<SidebarView> {
@@ -743,6 +953,22 @@ fn first_words(text: &str, max: usize) -> String {
     format!("{}…", cut.trim_end())
 }
 
+/// El resumen de la barra de terminado, corto para que quepa en ventanas estrechas.
+fn done_text(rows: &[ChangeRow]) -> String {
+    let (added, removed): (usize, usize) = rows
+        .iter()
+        .fold((0, 0), |(a, r), c| (a + c.added, r + c.removed));
+    let noun = if rows.len() == 1 {
+        "archivo"
+    } else {
+        "archivos"
+    };
+    format!(
+        "Terminó el turno · {} {noun} (+{added} −{removed})",
+        rows.len()
+    )
+}
+
 /// Carpeta del proyecto para un agente nuevo: la del panel con el foco o `$HOME`.
 pub fn default_project_dir(cwd: Option<PathBuf>) -> PathBuf {
     cwd.filter(|p| Path::new(p).is_dir())
@@ -833,5 +1059,23 @@ mod tests {
         );
         assert_eq!(first_words("abcdefghij", 5), "abcd…");
         assert_eq!(first_words("", 5), "");
+    }
+
+    #[test]
+    fn el_resumen_de_terminado_es_corto_y_concuerda_en_numero() {
+        let row = |a, r| ChangeRow {
+            tag: "M",
+            path: "x".into(),
+            added: a,
+            removed: r,
+        };
+        assert_eq!(
+            done_text(&[row(3, 1)]),
+            "Terminó el turno · 1 archivo (+3 −1)"
+        );
+        assert_eq!(
+            done_text(&[row(3, 1), row(10, 0)]),
+            "Terminó el turno · 2 archivos (+13 −1)"
+        );
     }
 }

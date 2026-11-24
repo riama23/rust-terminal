@@ -181,6 +181,18 @@ define_class!(
             }
         }
 
+        /// El diff de la revisión está calculado (hilo principal).
+        #[unsafe(method(reviewReady))]
+        fn review_ready(&self) {
+            let mtm = MainThreadMarker::new().expect("hilo principal");
+            for window in NSApplication::sharedApplication(mtm).windows().iter() {
+                if let Some(view) = crate::container::terminal_view(&window) {
+                    view.review_ready();
+                    break;
+                }
+            }
+        }
+
         /// ⌃⌥N: abre el formulario de nuevo agente desde cualquier app.
         #[unsafe(method(globalNewAgent))]
         fn global_new_agent(&self) {

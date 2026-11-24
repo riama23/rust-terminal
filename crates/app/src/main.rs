@@ -15,6 +15,8 @@ mod notify;
 mod palette;
 mod renderer;
 mod report;
+mod review_controller;
+mod review_ui;
 mod session;
 mod shell;
 mod view;
@@ -180,6 +182,7 @@ fn build_menu(app: &NSApplication, mtm: MainThreadMarker) {
         "Shell",
         vec![
             menu_item(mtm, "Nuevo agente…", sel!(newAgent:), "n"),
+            menu_item(mtm, "Revisar cambios del agente", sel!(reviewChanges:), "R"),
             menu_item(mtm, "Nueva pestaña", sel!(newTab:), "t"),
             menu_item(mtm, "Dividir en vertical", sel!(splitVertical:), "d"),
             menu_item(mtm, "Dividir en horizontal", sel!(splitHorizontal:), "D"),
@@ -425,6 +428,10 @@ fn open_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
         };
         if let Err(e) = view.launch_agent(spec, dir) {
             eprintln!("RT_AGENT_TEST: {e}");
+        }
+        // `RT_OPEN_REVIEW=1` abre además la revisión de ese agente.
+        if std::env::var_os("RT_OPEN_REVIEW").is_some() {
+            view.open_review();
         }
     }
     if !errors.is_empty() {

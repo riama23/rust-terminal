@@ -73,6 +73,61 @@ pub struct Telemetry {
     pub branch: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TodoStatus {
+    Pending,
+    InProgress,
+    Done,
+}
+
+impl TodoStatus {
+    /// Icono del inspector (siempre con el texto al lado).
+    pub fn icon(self) -> &'static str {
+        match self {
+            TodoStatus::Pending => "○",
+            TodoStatus::InProgress => "◐",
+            TodoStatus::Done => "✓",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Todo {
+    pub content: String,
+    pub status: TodoStatus,
+}
+
+/// La lista de tareas de una llamada a `TodoWrite` (`tool_input.todos`).
+/// Tolerante: lo que no se entiende se ignora y, si nada encaja, la lista
+/// queda vacía.
+pub fn parse_todos(tool_input: &Value) -> Vec<Todo> {
+    let Some(items) = tool_input.get("todos").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|t| {
+            let content = t
+                .get("content")
+                .or_else(|| t.get("subject"))
+                .and_then(Value::as_str)?
+                .trim();
+            if content.is_empty() {
+                return None;
+            }
+            let status = match t.get("status").and_then(Value::as_str) {
+                Some("completed") => TodoStatus::Done,
+                Some("in_progress") => TodoStatus::InProgress,
+                _ => TodoStatus::Pending,
+            };
+            Some(Todo {
+                content: content.to_owned(),
+                status,
+            })
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 pub struct AgentSession {
     pub key: AgentKey,
@@ -81,6 +136,8 @@ pub struct AgentSession {
     /// Petición de permiso pendiente (la que muestra la attention bar).
     pub pending: Option<PermissionRequest>,
     pub telemetry: Telemetry,
+    /// El plan: la lista de tareas más reciente que escribió el agente.
+    pub todos: Vec<Todo>,
     /// Orden de creación, para desempatar.
     pub seq: u64,
 }
@@ -101,6 +158,7 @@ impl AgentSession {
             status: Status::Working,
             pending: None,
             telemetry: Telemetry::default(),
+            todos: Vec::new(),
             seq,
         }
     }
@@ -111,6 +169,7 @@ impl AgentSession {
             self.status.clone(),
             self.pending.clone().map(|p| p.id),
             self.telemetry.clone(),
+            self.todos.clone(),
         );
         match event {
             BrokerEvent::Permission(p) => {
@@ -160,6 +219,7 @@ impl AgentSession {
                 self.status.clone(),
                 self.pending.clone().map(|p| p.id),
                 self.telemetry.clone(),
+                self.todos.clone(),
             )
     }
 
@@ -179,6 +239,14 @@ impl AgentSession {
         // Mientras hay un permiso pendiente nada de esto lo contradice: solo lo
         // cierra la decisión, el plazo o el fin de la sesión.
         let blocked = self.pending.is_some();
+        // El plan: la lista que el agente escribió con `TodoWrite` (formato sin
+        // verificar contra una sesión real; si no encaja, queda vacío).
+        if event == "PostToolUse"
+            && payload.get("tool_name").and_then(Value::as_str) == Some("TodoWrite")
+            && let Some(input) = payload.get("tool_input")
+        {
+            self.todos = parse_todos(input);
+        }
         match event {
             "SessionStart" | "PreToolUse" | "PostToolUse" | "TaskCreated" | "TaskCompleted"
                 if !blocked =>
@@ -482,5 +550,64 @@ mod tests {
         ] {
             assert!(!s.icon().is_empty() && !s.label().is_empty(), "{s:?}");
         }
+    }
+
+    #[test]
+    fn la_lista_de_tareas_sale_de_todowrite() {
+        let mut s = session();
+        s.apply(&hook(
+            "PostToolUse",
+            json!({"tool_name": "TodoWrite", "tool_input": {"todos": [
+                {"content": "Leer el README", "status": "completed", "activeForm": "Leyendo"},
+                {"content": "Escribir un resumen", "status": "in_progress"},
+                {"content": "Revisar", "status": "pending"},
+            ]}}),
+        ));
+        let estados: Vec<_> = s.todos.iter().map(|t| t.status).collect();
+        assert_eq!(
+            estados,
+            [
+                TodoStatus::Done,
+                TodoStatus::InProgress,
+                TodoStatus::Pending
+            ]
+        );
+        assert_eq!(s.todos[1].content, "Escribir un resumen");
+        // Una llamada nueva sustituye la lista entera.
+        s.apply(&hook(
+            "PostToolUse",
+            json!({"tool_name": "TodoWrite", "tool_input": {"todos": []}}),
+        ));
+        assert!(s.todos.is_empty());
+    }
+
+    #[test]
+    fn otras_herramientas_no_tocan_el_plan_y_lo_raro_se_ignora() {
+        let mut s = session();
+        s.apply(&hook(
+            "PostToolUse",
+            json!({"tool_name": "Bash", "tool_input": {"todos": [{"content": "x"}]}}),
+        ));
+        assert!(s.todos.is_empty());
+        for input in [
+            json!(null),
+            json!({"todos": "no"}),
+            json!({"todos": [5, {"content": "  "}, {"status": "pending"}]}),
+        ] {
+            assert!(parse_todos(&input).is_empty(), "{input}");
+        }
+        let sin_estado = parse_todos(&json!({"todos": [{"content": "algo"}]}));
+        assert_eq!(sin_estado[0].status, TodoStatus::Pending);
+    }
+
+    #[test]
+    fn cambiar_el_plan_cuenta_como_cambio_visible() {
+        let mut s = session();
+        let e = hook(
+            "PostToolUse",
+            json!({"tool_name": "TodoWrite", "tool_input": {"todos": [{"content": "a", "status": "pending"}]}}),
+        );
+        assert!(s.apply(&e));
+        assert!(!s.apply(&e), "el mismo plan no es un cambio");
     }
 }

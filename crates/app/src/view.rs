@@ -149,6 +149,22 @@ define_class!(
             }
         }
 
+        /// ⌘⇧R: revisar los cambios del agente del panel con el foco.
+        #[unsafe(method(reviewChanges:))]
+        fn review_changes_action(&self, _sender: Option<&AnyObject>) {
+            self.open_review();
+        }
+
+        #[unsafe(method(reviewSend:))]
+        fn review_send_action(&self, _sender: Option<&AnyObject>) {
+            self.review_send();
+        }
+
+        #[unsafe(method(reviewRefresh:))]
+        fn review_refresh_action(&self, _sender: Option<&AnyObject>) {
+            self.review_refresh();
+        }
+
         #[unsafe(method(newAgent:))]
         fn new_agent_action(&self, _sender: Option<&AnyObject>) {
             self.new_agent_sheet();
