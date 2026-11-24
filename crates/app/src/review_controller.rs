@@ -68,7 +68,7 @@ fn load(workdir: &Path) -> Result<Loaded, String> {
 }
 
 impl TerminalView {
-    fn info(&self, message: &str, info: &str) {
+    pub(crate) fn info(&self, message: &str, info: &str) {
         let alert = NSAlert::new(self.mtm());
         alert.setMessageText(&NSString::from_str(message));
         alert.setInformativeText(&NSString::from_str(info));

@@ -23,7 +23,7 @@ use rust_terminal_core::{Cursor, Modes, SelectionRange, Term};
 
 use crate::config::Theme;
 use crate::font::FontSpec;
-use crate::renderer::{Frame, Layout, Overlay, PaneFrame, PaneHeader, Renderer, TabBar};
+use crate::renderer::{BlockSpan, Frame, Layout, Overlay, PaneFrame, PaneHeader, Renderer, TabBar};
 use crate::session::Session;
 
 /// Un panel visible: su sesión, su rectángulo en píxeles y si tiene el foco.
@@ -39,6 +39,16 @@ pub struct PaneSlot {
     pub preedit: Option<String>,
     /// Atenuado: panel sin foco entre varios.
     pub dim: bool,
+    pub blocks: BlockView,
+}
+
+/// Cómo se ven los bloques de un panel.
+#[derive(Clone, Copy, Default)]
+pub struct BlockView {
+    /// Teñir los bloques fallidos y el seleccionado (`blocks.visual`).
+    pub visual: bool,
+    /// Identificador del bloque seleccionado.
+    pub selected: Option<u64>,
 }
 
 /// Lo que publica el hilo principal para el render.
@@ -92,7 +102,13 @@ impl WindowShared {
 }
 
 /// Selección y marcas de bloque en coordenadas del panel.
-fn overlay(term: &Term, rows: usize, cols: usize, link: Option<SelectionRange>) -> Overlay {
+fn overlay(
+    term: &Term,
+    rows: usize,
+    cols: usize,
+    link: Option<SelectionRange>,
+    view: BlockView,
+) -> Overlay {
     let mut overlay = Overlay::default();
     if let Some(range) = link {
         for row in 0..rows {
@@ -114,6 +130,31 @@ fn overlay(term: &Term, rows: usize, cols: usize, link: Option<SelectionRange>) 
         if (top..=bottom).contains(&line) {
             let failed = block.exit_code.is_some_and(|c| c != 0);
             overlay.marks.push(((line - top) as usize, failed));
+        }
+    }
+    // Sin tinte en la pantalla alternativa (vim, htop): ahí no hay bloques.
+    if view.visual && !term.modes().alt_screen {
+        for block in term.blocks() {
+            let failed = block.exit_code.is_some_and(|c| c != 0);
+            let selected = view.selected == Some(block.id);
+            if !failed && !selected {
+                continue;
+            }
+            let first = block.prompt.line;
+            let last = match block.end {
+                Some(e) if e.col == 0 && e.line > first => e.line - 1,
+                Some(e) => e.line.max(first),
+                None => bottom,
+            };
+            if last < top || first > bottom {
+                continue;
+            }
+            overlay.blocks.push(BlockSpan {
+                first: (first.max(top) - top) as usize,
+                last: (last.min(bottom) - top) as usize,
+                failed,
+                selected,
+            });
         }
     }
     overlay
@@ -309,7 +350,7 @@ impl RenderTarget {
                     pad: slot.pad,
                     cursor,
                     modes,
-                    overlay: overlay(&term, rows, cols, slot.link),
+                    overlay: overlay(&term, rows, cols, slot.link, slot.blocks),
                     focused: slot.focused,
                     preedit: slot.preedit.clone(),
                     dim: slot.dim,
@@ -341,7 +382,7 @@ impl RenderTarget {
                 pad: slot.pad,
                 cursor,
                 modes,
-                overlay: overlay(&term, rows, cols, slot.link),
+                overlay: overlay(&term, rows, cols, slot.link, slot.blocks),
                 focused: slot.focused,
                 preedit: slot.preedit.clone(),
                 dim: slot.dim,

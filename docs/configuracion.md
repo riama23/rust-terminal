@@ -128,6 +128,24 @@ Muestra en la sidebar los `claude` que lanzas a mano en un panel. Con zsh, una f
 - **Por defecto:** `true`
 - **Se aplica:** pestañas nuevas
 
+## `[blocks]`
+
+### `visual`
+
+Tiñe los bloques fallidos y el seleccionado y muestra la barra de acciones del bloque (⌘↑ y ⌘↓ seleccionan). Con `false`, solo quedan las marcas del margen.
+
+- **Tipo:** `true` o `false`
+- **Por defecto:** `true`
+- **Se aplica:** en vivo
+
+### `editor`
+
+Orden para «Abrir en el editor» (⌘O) con `{path}`, `{line}` y `{col}`, por ejemplo `code -g {path}:{line}:{col}`. Vacío: `open -t` (el editor de texto por defecto, sin línea).
+
+- **Tipo:** un texto
+- **Por defecto:** `""`
+- **Se aplica:** en vivo
+
 ## `[scrollback]`
 
 ### `lines`

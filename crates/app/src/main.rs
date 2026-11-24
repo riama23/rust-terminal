@@ -5,6 +5,9 @@ mod agent;
 mod agent_controller;
 mod agent_sheet;
 mod agent_ui;
+mod block_controller;
+mod block_ui;
+mod blocks;
 mod config;
 mod container;
 mod font;
@@ -216,6 +219,25 @@ fn build_menu(app: &NSApplication, mtm: MainThreadMarker) {
         vec![
             menu_item(mtm, "Bloque anterior", sel!(previousBlock:), "\u{F700}"),
             menu_item(mtm, "Bloque siguiente", sel!(nextBlock:), "\u{F701}"),
+            menu_item(
+                mtm,
+                "Relanzar el bloque seleccionado",
+                sel!(blockRerun:),
+                "",
+            ),
+            menu_item(
+                mtm,
+                "Copiar la salida del bloque seleccionado",
+                sel!(blockCopy:),
+                "",
+            ),
+            menu_item(mtm, "Detener el bloque en ejecución", sel!(blockStop:), ""),
+            menu_item(
+                mtm,
+                "Abrir el error del bloque en el editor",
+                sel!(blockOpen:),
+                "o",
+            ),
         ],
     );
 
