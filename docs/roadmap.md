@@ -10,7 +10,7 @@ Este documento encaja el spec de producto (`docs/macOS Terminal — UI UX Spec f
 | v1.1 | Spike de hooks + ventana como contenedor de vistas | Hecho (rama `v1.1-contenedor`), verificación manual pendiente |
 | v1.2 | Broker, lanzar agente, sidebar, aprobar y denegar | Hecho (misma rama), verificación manual pendiente (`docs/verificacion-v1.2.md`) |
 | v1.3 | Notificaciones accionables, Dock badge, menu bar extra | Hecho (rama `v1.1-contenedor`), verificación manual pendiente (`docs/verificacion-v1.3.md`) |
-| v1.4 | Review de diff, comentarios en lote, inspector | Pendiente |
+| v1.4 | Review de diff, comentarios en lote, inspector | Hecho salvo descartar worktree y abrir PR (rama `v1.1-contenedor`), verificación manual pendiente (`docs/verificacion-v1.4.md`) |
 | v1.5 | Bloques visuales, paleta de comandos, polish de splits | Pendiente |
 | v1.6 | Ajustes, tema Paper, quick terminal, keybindings | Pendiente |
 | v2 | API de control por agentes | Sin diseñar |
