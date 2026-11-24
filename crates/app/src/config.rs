@@ -162,6 +162,22 @@ pub const OPTIONS: &[OptionSpec] = &[
         description: "Muestra en la sidebar los `claude` que lanzas a mano en un panel. Con zsh, una función `claude` le pasa los hooks de la app; con otras shells solo se ve que está en marcha.",
     },
     OptionSpec {
+        section: "blocks",
+        key: "visual",
+        kind: Kind::Bool,
+        default: "true",
+        apply: Apply::Live,
+        description: "Tiñe los bloques fallidos y el seleccionado y muestra la barra de acciones del bloque (⌘↑ y ⌘↓ seleccionan). Con `false`, solo quedan las marcas del margen.",
+    },
+    OptionSpec {
+        section: "blocks",
+        key: "editor",
+        kind: Kind::Str,
+        default: r#""""#,
+        apply: Apply::Live,
+        description: "Orden para «Abrir en el editor» (⌘O) con `{path}`, `{line}` y `{col}`, por ejemplo `code -g {path}:{line}:{col}`. Vacío: `open -t` (el editor de texto por defecto, sin línea).",
+    },
+    OptionSpec {
         section: "scrollback",
         key: "lines",
         kind: Kind::Int {
@@ -250,6 +266,8 @@ pub struct Config {
     pub track_manual_claude: bool,
     pub dim_unfocused: bool,
     pub pane_headers: bool,
+    pub block_visual: bool,
+    pub block_editor: String,
     pub scrollback_lines: usize,
     pub clipboard_write: bool,
     pub clipboard_read: ClipboardRead,
@@ -368,6 +386,8 @@ impl Config {
             ("window", "padding", Value::Float(f)) => self.padding = f,
             ("window", "dim_unfocused", Value::Bool(b)) => self.dim_unfocused = b,
             ("window", "pane_headers", Value::Bool(b)) => self.pane_headers = b,
+            ("blocks", "visual", Value::Bool(b)) => self.block_visual = b,
+            ("blocks", "editor", Value::Str(s)) => self.block_editor = s,
             ("shell", "program", Value::Str(s)) => {
                 self.shell_program = (!s.is_empty()).then_some(s)
             }
@@ -484,6 +504,8 @@ impl Default for Config {
             track_manual_claude: false,
             dim_unfocused: false,
             pane_headers: false,
+            block_visual: false,
+            block_editor: String::new(),
             scrollback_lines: 0,
             clipboard_write: false,
             clipboard_read: ClipboardRead::Deny,

@@ -214,6 +214,17 @@ pub struct Overlay {
     pub marks: Vec<(usize, bool)>,
     /// Enlace bajo el ratón (Cmd): columnas `[inicio, fin]` por fila, se subrayan.
     pub links: Vec<(usize, usize, usize)>,
+    /// Bloques con fondo propio (fallidos o seleccionados), en filas de la vista.
+    pub blocks: Vec<BlockSpan>,
+}
+
+/// Las filas de la vista que ocupa un bloque y cómo se tiñen.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BlockSpan {
+    pub first: usize,
+    pub last: usize,
+    pub failed: bool,
+    pub selected: bool,
 }
 
 /// Tamaño del drawable y escala.
@@ -774,6 +785,32 @@ impl Renderer {
                 }
             }
         }
+        // Bloques: fondo tintado (rojo si falló, acento si está seleccionado)
+        // sobre las celdas y bajo el texto.
+        for span in &overlay.blocks {
+            let y = oy + span.first as f32 * ch;
+            let h = (span.last + 1 - span.first) as f32 * ch;
+            let rect = [pane.rect[0], y, pane.rect[2], h];
+            if span.failed {
+                self.quads.push(fill(
+                    rect,
+                    palette::to_rgba(
+                        palette::MARK_FAILED,
+                        if span.selected { 0.16 } else { 0.09 },
+                    ),
+                ));
+            } else if span.selected {
+                self.quads
+                    .push(fill(rect, palette::to_rgba(palette::ACCENT, 0.12)));
+            }
+            if span.selected {
+                let bar = (pad * 0.5).round().max(3.0);
+                self.quads.push(fill(
+                    [pane.rect[0], y, bar, h],
+                    palette::to_rgba(palette::ACCENT, 1.0),
+                ));
+            }
+        }
         if let Some(text) = &pane.preedit {
             self.draw_preedit(text, pane, glyphs);
         }
@@ -1052,6 +1089,30 @@ mod tests {
     }
 
     #[test]
+    fn failed_and_selected_blocks_are_tinted_under_the_text() {
+        let mut term = Term::new(4, 3);
+        term.advance(b"\x1b[?25l");
+        let span = |first, failed, selected| BlockSpan {
+            first,
+            last: first,
+            failed,
+            selected,
+        };
+        let overlay = Overlay {
+            blocks: vec![span(0, true, false), span(1, false, true)],
+            ..Overlay::default()
+        };
+        let (layout, m, pixels) = render_with(&term, 2.0, &overlay);
+        let bg = bgra(theme().background);
+        // Fila 0 (fallida) y fila 1 (seleccionada) cambian de color; la 2 no.
+        let center = |row: u32| cell_pixels(layout, m, &pixels, row, 3)[0];
+        assert_ne!(center(0), bg, "el bloque fallido se tiñe");
+        assert_ne!(center(1), bg, "el seleccionado se tiñe");
+        assert_ne!(center(0), center(1), "con colores distintos");
+        assert_eq!(center(2), bg, "el resto no cambia");
+    }
+
+    #[test]
     fn selection_and_block_marks() {
         let mut term = Term::new(4, 2);
         term.advance(b"\x1b[?25l");
@@ -1059,6 +1120,7 @@ mod tests {
             selection: vec![(0, 1, 2)],
             marks: vec![(1, true)],
             links: vec![(1, 2, 3)],
+            blocks: Vec::new(),
         };
         let (layout, m, pixels) = render_with(&term, 2.0, &overlay);
         let sel = bgra(theme().selection);
@@ -1158,6 +1220,7 @@ mod tests {
             selection: vec![(1, 0, 6), (2, 10, 20)],
             marks: vec![(0, false), (8, true)],
             links: Vec::new(),
+            blocks: Vec::new(),
         };
         let (layout, _m, pixels) = render_with(&term, 2.0, &overlay);
         let (w, h) = (layout.width_px as usize, layout.height_px as usize);

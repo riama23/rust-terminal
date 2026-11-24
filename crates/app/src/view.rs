@@ -95,6 +95,8 @@ pub struct ViewIvars {
     /// Fotograma del spinner de las pestañas y si su reloj está en marcha.
     spinner_phase: Cell<usize>,
     spinner_running: Cell<bool>,
+    /// Bloque seleccionado con ⌘↑/⌘↓: panel e identificador.
+    pub(crate) selected_block: Cell<Option<(PaneId, u64)>>,
     /// Agentes de Claude Code de esta ventana (sidebar y attention bar).
     pub(crate) agents: crate::agent_controller::AgentController,
 }
@@ -272,29 +274,33 @@ define_class!(
 
         #[unsafe(method(previousBlock:))]
         fn previous_block(&self, _sender: Option<&AnyObject>) {
-            if let Some(s) = self.focused_session() {
-                let mut term = s.term.lock().unwrap();
-                let top = term.visible_line(0);
-                let target = term.blocks().iter().rev().map(|b| b.prompt.line).find(|&l| l < top);
-                if let Some(line) = target {
-                    term.scroll_to_line(line);
-                }
-            }
-            self.request_frame();
+            self.step_block(crate::blocks::Step::Previous);
         }
 
         #[unsafe(method(nextBlock:))]
         fn next_block(&self, _sender: Option<&AnyObject>) {
-            if let Some(s) = self.focused_session() {
-                let mut term = s.term.lock().unwrap();
-                let top = term.visible_line(0);
-                let target = term.blocks().iter().map(|b| b.prompt.line).find(|&l| l > top);
-                match target {
-                    Some(line) => term.scroll_to_line(line),
-                    None => term.scroll_to_bottom(),
-                }
-            }
-            self.request_frame();
+            self.step_block(crate::blocks::Step::Next);
+        }
+
+        #[unsafe(method(blockStop:))]
+        fn block_stop_action(&self, _sender: Option<&AnyObject>) {
+            self.block_stop();
+        }
+
+        #[unsafe(method(blockRerun:))]
+        fn block_rerun_action(&self, _sender: Option<&AnyObject>) {
+            self.block_rerun();
+        }
+
+        #[unsafe(method(blockCopy:))]
+        fn block_copy_action(&self, _sender: Option<&AnyObject>) {
+            self.block_copy();
+        }
+
+        /// ⌘O: el primer `archivo:línea` de la salida del bloque, en el editor.
+        #[unsafe(method(blockOpen:))]
+        fn block_open_action(&self, _sender: Option<&AnyObject>) {
+            self.block_open_in_editor();
         }
 
         // --- Pestañas y paneles ---
@@ -567,7 +573,7 @@ fn read_pasteboard() -> Option<String> {
         .map(|s| s.to_string())
 }
 
-fn copy_to_pasteboard(text: &str) {
+pub(crate) fn copy_to_pasteboard(text: &str) {
     // SAFETY: portapapeles general, en el hilo principal.
     unsafe {
         let pb = NSPasteboard::generalPasteboard();
@@ -618,6 +624,7 @@ impl TerminalView {
             last_focus: Cell::new(None),
             spinner_phase: Cell::new(0),
             spinner_running: Cell::new(false),
+            selected_block: Cell::new(None),
             agents: Default::default(),
         });
         // SAFETY: `initWithFrame:` de NSView.
@@ -655,7 +662,22 @@ impl TerminalView {
         self.ivars().sessions.borrow().get(&id).cloned()
     }
 
-    fn focused_session(&self) -> Option<Arc<Session>> {
+    /// Bloque seleccionado (panel e identificador) y su ajuste visual.
+    pub(crate) fn block_selected(&self) -> Option<(PaneId, u64)> {
+        self.ivars().selected_block.get()
+    }
+
+    pub(crate) fn set_block_selected(&self, sel: Option<(PaneId, u64)>) {
+        self.ivars().selected_block.set(sel);
+    }
+
+    /// `(blocks.visual, blocks.editor)`.
+    pub(crate) fn block_config(&self) -> (bool, String) {
+        let c = self.ivars().config.borrow();
+        (c.block_visual, c.block_editor.clone())
+    }
+
+    pub(crate) fn focused_session(&self) -> Option<Arc<Session>> {
         if self.ivars().workspace.borrow().is_none() {
             return None;
         }
@@ -1097,6 +1119,8 @@ impl TerminalView {
 
         let focused = self.with_workspace(Workspace::focused);
         let dim_unfocused = self.ivars().config.borrow().dim_unfocused;
+        let block_visual = self.ivars().config.borrow().block_visual;
+        let selected_block = self.ivars().selected_block.get();
         let sessions = self.ivars().sessions.borrow();
         let mut slots = Vec::new();
         for (id, r) in &g.panes {
@@ -1109,6 +1133,10 @@ impl TerminalView {
                 pad: g.pad as f32,
                 focused: *id == focused,
                 dim: dim_unfocused && g.panes.len() > 1 && *id != focused,
+                blocks: crate::window::BlockView {
+                    visual: block_visual,
+                    selected: selected_block.filter(|(p, _)| p == id).map(|(_, b)| b),
+                },
                 link: self
                     .ivars()
                     .hover_link
@@ -1770,6 +1798,10 @@ impl TerminalView {
             ctrl: flags.contains(NSEventModifierFlags::Control),
         };
         let cmd = flags.contains(NSEventModifierFlags::Command);
+        // Teclear quita la selección de bloque (y su barra).
+        if !cmd && kind == KeyKind::Press && self.ivars().selected_block.get().is_some() {
+            self.clear_block_selection();
+        }
         let composing = !self.ivars().marked.borrow().is_empty();
         let Some(session) = self.focused_session() else {
             return;

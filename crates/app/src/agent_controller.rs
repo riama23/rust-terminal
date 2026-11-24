@@ -106,6 +106,7 @@ struct Inner {
     /// Qué ocupa el hueco bajo la terminal (la de atención manda sobre la de terminado).
     bottom: Bottom,
     done_bar: Option<Retained<DoneBar>>,
+    block_bar: Option<Retained<crate::block_ui::BlockBar>>,
     inspector: Option<Retained<InspectorView>>,
     inspector_shown: bool,
     /// Último diff calculado de cada agente: cambios y rama.
@@ -183,6 +184,8 @@ enum Bottom {
     None,
     Attention,
     Done,
+    /// Acciones del bloque seleccionado (terminales normales).
+    Block,
 }
 
 fn status_color(status: &Status) -> [u8; 3] {
@@ -854,13 +857,23 @@ impl TerminalView {
             let (rows, _) = changes.as_ref()?;
             (!rows.is_empty()).then(|| done_text(rows))
         });
+        let block_info = if pending.is_none() && done_summary.is_none() {
+            self.block_bar_info()
+        } else {
+            None
+        };
         let want = if pending.is_some() {
             Bottom::Attention
         } else if done_summary.is_some() {
             Bottom::Done
+        } else if block_info.is_some() {
+            Bottom::Block
         } else {
             Bottom::None
         };
+        if let Some(info) = &block_info {
+            self.ensure_block_bar().set_info(info);
+        }
         match (&pending, &done_summary) {
             (Some(req), _) => {
                 let bar = self.ensure_bar();
@@ -879,6 +892,10 @@ impl TerminalView {
                 Bottom::Done => {
                     container.set_bottom(Some((&self.ensure_done_bar(), DONE_BAR_HEIGHT)))
                 }
+                Bottom::Block => container.set_bottom(Some((
+                    &self.ensure_block_bar(),
+                    crate::block_ui::BLOCK_BAR_HEIGHT,
+                ))),
                 Bottom::None => container.set_bottom(None),
             }
         }
@@ -911,6 +928,25 @@ impl TerminalView {
                 }
             }
         }
+    }
+
+    fn ensure_block_bar(&self) -> Retained<crate::block_ui::BlockBar> {
+        let state = self.agents();
+        if let Some(b) = state.inner.borrow().block_bar.clone() {
+            return b;
+        }
+        let bar = crate::block_ui::BlockBar::new(
+            self.mtm(),
+            self.as_ref(),
+            crate::block_ui::BlockActions {
+                stop: sel!(blockStop:),
+                rerun: sel!(blockRerun:),
+                copy: sel!(blockCopy:),
+                open: sel!(blockOpen:),
+            },
+        );
+        state.inner.borrow_mut().block_bar = Some(bar.clone());
+        bar
     }
 
     fn ensure_done_bar(&self) -> Retained<DoneBar> {
