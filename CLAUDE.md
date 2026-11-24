@@ -118,7 +118,7 @@ Un **emulador de terminal para macOS** escrito en Rust (no una shell: por dentro
 
 ## Rendimiento
 
-- **Métricas principales:** latencia de entrada y throughput. Objetivo: igual o mejor que **Ghostty y Alacritty**, medido en el Mac del usuario con Typometer (latencia) y `vtebench` (throughput).
+- **Métricas principales:** latencia de entrada y throughput. Objetivo: igual o mejor que **Ghostty y Alacritty**, medido en el Mac del usuario con Typometer (latencia) y `vtebench` (throughput). **Warp** se mide también como referencia (es lo que esta terminal sustituye), pero no es el objetivo.
 - **Restricciones que no deben empeorar:** memoria con scrollback grande (el límite se fija tras la primera medición) y energía en reposo. **En reposo y sin cambios en pantalla no se renderiza ningún frame.**
 - **Fuera del foco:** el tiempo de arranque.
 - Los benchmarks viven en el repo y se ejecutan en local con un solo comando; no se ejecutan en CI.
@@ -166,7 +166,7 @@ Un **emulador de terminal para macOS** escrito en Rust (no una shell: por dentro
 - **App empaquetada:** `scripts/bundle.sh [debug|release]` genera `target/<perfil>/rust-terminal.app`, con firma ad hoc y nombre provisional.
   - Para probarla con logs: `open -n --stderr /tmp/rt.log --env RT_FRAME_STATS=1 target/debug/rust-terminal.app`.
 - **Benchmarks:**
-  - `scripts/compare.sh` compara con Ghostty y Alacritty usando vtebench. `RT_COMPARE` elige qué terminales medir.
+  - `scripts/compare.sh` compara con Ghostty, Alacritty y Warp usando vtebench. `RT_COMPARE` elige qué terminales medir. Warp se lanza con una *launch configuration* temporal y mide con su propio tamaño de ventana (el resumen avisa si no es 100×30).
   - `scripts/latency.sh` abre Typometer para medir la latencia a mano.
   - `scripts/bench.sh core [filtro]` es el microbenchmark del núcleo.
   - `scripts/bench.sh vtebench` hay que ejecutarlo dentro de la terminal que se quiere medir. Usa `vtebench` fijado a un commit.
