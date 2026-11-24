@@ -299,6 +299,30 @@ pub const OPTIONS: &[OptionSpec] = &[
         apply: Apply::Live,
         description: "Con la ventana en segundo plano, la campana (BEL) hace rebotar el icono del Dock.",
     },
+    OptionSpec {
+        section: "keyboard",
+        key: "option_as_meta",
+        kind: Kind::Choice(&["left", "both", "none"]),
+        default: r#""left""#,
+        apply: Apply::Live,
+        description: "Qué tecla Option actúa como Meta (⌥← y ⌥→ saltan de palabra, ⌥⌫ la borra): `left` (la izquierda; la derecha compone @, # y acentos), `both` o `none` (Option solo compone).",
+    },
+    OptionSpec {
+        section: "keyboard",
+        key: "command_line_editing",
+        kind: Kind::Bool,
+        default: "true",
+        apply: Apply::Live,
+        description: "⌘← y ⌘→ van al inicio y al final de la línea, ⌘⌫ borra hasta el inicio y ⌘Supr hasta el final. Los atajos del menú tienen prioridad.",
+    },
+    OptionSpec {
+        section: "keyboard",
+        key: "shift_select",
+        kind: Kind::Bool,
+        default: "true",
+        apply: Apply::NewTabs,
+        description: "⇧←/→ seleccionan texto en la línea de comandos de zsh (⌥⇧ por palabras, ⌘⇧ hasta el inicio o el final). Requiere la integración con zsh.",
+    },
     kb!("command_palette", "cmd+shift+p", "Paleta de comandos"),
     kb!("new_agent", "cmd+n", "Nuevo agente"),
     kb!(
@@ -307,6 +331,7 @@ pub const OPTIONS: &[OptionSpec] = &[
         "Revisar cambios del agente"
     ),
     kb!("new_tab", "cmd+t", "Nueva pestaña"),
+    kb!("clear_screen", "cmd+k", "Limpiar pantalla"),
     kb!("split_vertical", "cmd+d", "Dividir en vertical"),
     kb!("split_horizontal", "cmd+shift+d", "Dividir en horizontal"),
     kb!("close_pane", "cmd+w", "Cerrar el panel"),
@@ -469,6 +494,28 @@ pub struct Config {
     /// 0: nunca.
     pub long_command_seconds: u64,
     pub bell_dock_bounce: bool,
+    pub option_as_meta: OptionAsMeta,
+    pub command_line_editing: bool,
+    pub shift_select: bool,
+}
+
+/// Qué tecla Option actúa como Meta (`keyboard.option_as_meta`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptionAsMeta {
+    Left,
+    Both,
+    None,
+}
+
+impl OptionAsMeta {
+    /// Si la pulsación (con los bits de dispositivo de Option) hace de Meta.
+    pub fn is_meta(self, left_down: bool, right_down: bool) -> bool {
+        match self {
+            Self::Left => left_down && !right_down,
+            Self::Both => left_down || right_down,
+            Self::None => false,
+        }
+    }
 }
 
 /// Valor ya validado.
@@ -693,6 +740,15 @@ impl Config {
                 self.long_command_seconds = i as u64
             }
             ("bell", "dock_bounce", Value::Bool(b)) => self.bell_dock_bounce = b,
+            ("keyboard", "option_as_meta", Value::Str(s)) => {
+                self.option_as_meta = match s.as_str() {
+                    "both" => OptionAsMeta::Both,
+                    "none" => OptionAsMeta::None,
+                    _ => OptionAsMeta::Left,
+                }
+            }
+            ("keyboard", "command_line_editing", Value::Bool(b)) => self.command_line_editing = b,
+            ("keyboard", "shift_select", Value::Bool(b)) => self.shift_select = b,
             ("control", "enabled", Value::Bool(b)) => self.control_enabled = b,
             ("quick_terminal", "enabled", Value::Bool(b)) => self.quick_enabled = b,
             ("quick_terminal", "height", Value::Int(i)) => self.quick_height = i as f64,
@@ -868,6 +924,9 @@ impl Default for Config {
             notifications: false,
             long_command_seconds: 0,
             bell_dock_bounce: false,
+            option_as_meta: OptionAsMeta::Left,
+            command_line_editing: true,
+            shift_select: true,
         };
         for spec in OPTIONS {
             let value: toml::Value = format!("v = {}", spec.default)

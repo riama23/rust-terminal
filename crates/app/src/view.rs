@@ -286,6 +286,24 @@ define_class!(
             }
         }
 
+        /// ⌘K: borra el historial y le pide a la shell que redibuje el prompt
+        /// arriba (`^L`), salvo que haya una aplicación en pantalla alternativa.
+        #[unsafe(method(clearScreen:))]
+        fn clear_screen(&self, _sender: Option<&AnyObject>) {
+            let Some(session) = self.focused_session() else {
+                return;
+            };
+            let alt_screen = {
+                let mut term = session.term.lock().unwrap();
+                term.clear_scrollback();
+                term.modes().alt_screen
+            };
+            if !alt_screen {
+                self.send_input(b"\x0c");
+            }
+            self.request_frame();
+        }
+
         /// Copia la salida del último comando terminado (bloques OSC 133).
         #[unsafe(method(copyLastOutput:))]
         fn copy_last_output(&self, _sender: Option<&AnyObject>) {
@@ -1166,6 +1184,9 @@ impl TerminalView {
                     // (solo los usa la función de zsh).
                     if config.track_manual_claude && !zsh.is_empty() {
                         env.extend(self.manual_claude_env(id, cwd.as_deref()));
+                    }
+                    if config.shift_select && !zsh.is_empty() {
+                        env.push(("RT_SHIFT_SELECT".to_owned(), "1".to_owned()));
                     }
                     env.extend(zsh);
                 }
@@ -2218,8 +2239,13 @@ impl TerminalView {
         let flags = event.modifierFlags();
         let raw = flags.0;
         // Bits de dispositivo: Option izquierda (0x20) y derecha (0x40).
-        // La izquierda actúa como Meta; la derecha compone (@, #…).
-        let meta = raw & DEVICE_LEFT_ALT != 0 && raw & DEVICE_RIGHT_ALT == 0;
+        // Según `keyboard.option_as_meta`: por defecto la izquierda actúa como
+        // Meta y la derecha compone (@, #…).
+        let (option_as_meta, command_line_editing) = {
+            let c = self.ivars().config.borrow();
+            (c.option_as_meta, c.command_line_editing)
+        };
+        let meta = option_as_meta.is_meta(raw & DEVICE_LEFT_ALT != 0, raw & DEVICE_RIGHT_ALT != 0);
         let mods = Mods {
             shift: flags.contains(NSEventModifierFlags::Shift),
             alt: meta,
@@ -2235,11 +2261,29 @@ impl TerminalView {
             return;
         };
         let modes = session.term.lock().unwrap().modes();
+        let special = input::key_from_keycode(event.keyCode());
         if cmd && kind != KeyKind::Release {
-            // Los atajos con Cmd los resuelve el menú; el resto se ignora.
+            // Los atajos con Cmd los resuelve el menú (antes de llegar aquí).
+            // Los que nadie reclama editan la línea, salvo con kitty o en la
+            // pantalla alternativa, donde la aplicación decide.
+            let editable = command_line_editing
+                && !composing
+                && modes.kitty_flags == 0
+                && !modes.alt_screen
+                && !mods.alt
+                && !mods.ctrl;
+            let bytes = special.and_then(|key| {
+                if mods.shift {
+                    input::command_select(key)
+                } else {
+                    input::command_edit(key)
+                }
+            });
+            if editable && let Some(bytes) = bytes {
+                self.send_input(bytes);
+            }
             return;
         }
-        let special = input::key_from_keycode(event.keyCode());
         // Carácter de la tecla sin modificadores (en el layout actual) y con Shift.
         let base = event
             .charactersByApplyingModifiers(NSEventModifierFlags::empty())
@@ -2294,7 +2338,13 @@ impl TerminalView {
 
         if !composing {
             if let Some(key) = special {
-                self.send_input(&input::encode_key(key, mods, modes.app_cursor));
+                // Saltos y borrado por palabras (⌥←/→/⌫/Supr y ⌃←/→) en la
+                // shell; en la pantalla alternativa va la secuencia xterm.
+                let words = (!modes.alt_screen)
+                    .then(|| input::word_edit(key, mods))
+                    .flatten();
+                let bytes = words.unwrap_or_else(|| input::encode_key(key, mods, modes.app_cursor));
+                self.send_input(&bytes);
                 return;
             }
             let c = ignoring.chars().next();

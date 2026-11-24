@@ -45,6 +45,7 @@ actions![
         "Revisar cambios del agente"
     ),
     ("new_tab", "newTab:", "cmd+t", "Nueva pestaña"),
+    ("clear_screen", "clearScreen:", "cmd+k", "Limpiar pantalla"),
     (
         "split_vertical",
         "splitVertical:",

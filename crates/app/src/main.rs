@@ -287,6 +287,7 @@ fn build_menu(app: &NSApplication, mtm: MainThreadMarker) {
                 "C",
             ),
             menu_item(mtm, "Pegar", sel!(paste:), "v"),
+            menu_item(mtm, "Limpiar pantalla", sel!(clearScreen:), "k"),
         ],
     );
 
