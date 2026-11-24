@@ -160,6 +160,22 @@ define_class!(
             self.review_send();
         }
 
+        /// «Abrir PR…» de la barra de terminado: el agente del panel con el foco.
+        #[unsafe(method(openPullRequest:))]
+        fn open_pull_request_action(&self, _sender: Option<&AnyObject>) {
+            self.open_pr_focused();
+        }
+
+        #[unsafe(method(reviewOpenPR:))]
+        fn review_open_pr_action(&self, _sender: Option<&AnyObject>) {
+            self.open_pr_review();
+        }
+
+        #[unsafe(method(reviewDiscard:))]
+        fn review_discard_action(&self, _sender: Option<&AnyObject>) {
+            self.discard_worktree_review();
+        }
+
         #[unsafe(method(reviewRefresh:))]
         fn review_refresh_action(&self, _sender: Option<&AnyObject>) {
             self.review_refresh();

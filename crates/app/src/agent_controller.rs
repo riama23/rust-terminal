@@ -55,6 +55,10 @@ impl AgentController {
         self.inner.borrow().workdirs.get(key).cloned()
     }
 
+    pub(crate) fn project_of(&self, key: &str) -> Option<PathBuf> {
+        self.inner.borrow().projects.get(key).cloned()
+    }
+
     pub(crate) fn title_of(&self, key: &str) -> Option<String> {
         self.inner
             .borrow()
@@ -914,7 +918,12 @@ impl TerminalView {
         if let Some(b) = state.inner.borrow().done_bar.clone() {
             return b;
         }
-        let bar = DoneBar::new(self.mtm(), self.as_ref(), sel!(reviewChanges:));
+        let bar = DoneBar::new(
+            self.mtm(),
+            self.as_ref(),
+            sel!(reviewChanges:),
+            sel!(openPullRequest:),
+        );
         state.inner.borrow_mut().done_bar = Some(bar.clone());
         bar
     }

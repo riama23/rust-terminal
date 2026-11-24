@@ -435,11 +435,22 @@ impl DiffView {
 pub const HEADER_H: f64 = 68.0;
 pub const LIST_W: f64 = 264.0;
 
+/// Los selectores que reciben los botones de la cabecera.
+#[derive(Clone, Copy)]
+pub struct ReviewActions {
+    pub refresh: Sel,
+    pub send: Sel,
+    pub pr: Sel,
+    pub discard: Sel,
+}
+
 pub struct RootIvars {
     title: Retained<NSTextField>,
     subtitle: Retained<NSTextField>,
     refresh: Retained<NSButton>,
     send: Retained<NSButton>,
+    pr: Retained<NSButton>,
+    discard: Retained<NSButton>,
     pub list: Retained<FileListView>,
     pub scroll: Retained<NSScrollView>,
     pub diff: Retained<DiffView>,
@@ -491,12 +502,11 @@ fn small_label(mtm: MainThreadMarker, size: f64, color: [u8; 3]) -> Retained<NST
 }
 
 impl ReviewRoot {
-    /// `target` recibe `refresh` y `send`.
+    /// `target` recibe las acciones de los botones.
     pub fn new(
         mtm: MainThreadMarker,
         target: &AnyObject,
-        refresh: Sel,
-        send: Sel,
+        actions: ReviewActions,
     ) -> Retained<Self> {
         let button = |title: &str, action: Sel| {
             // SAFETY: `target` implementa `action`.
@@ -517,8 +527,10 @@ impl ReviewRoot {
         let ivars = RootIvars {
             title: small_label(mtm, 15.0, dusk::TEXT),
             subtitle: small_label(mtm, 12.0, dusk::MUTED),
-            refresh: button("Actualizar", refresh),
-            send: button("Enviar comentarios a Claude", send),
+            refresh: button("Actualizar", actions.refresh),
+            send: button("Enviar comentarios a Claude", actions.send),
+            pr: button("Abrir PR\u{2026}", actions.pr),
+            discard: button("Descartar worktree\u{2026}", actions.discard),
             list: FileListView::new(mtm),
             scroll,
             diff,
@@ -538,6 +550,8 @@ impl ReviewRoot {
             &iv.subtitle,
             &iv.refresh,
             &iv.send,
+            &iv.pr,
+            &iv.discard,
             &*iv.list,
             &*iv.scroll,
         ] {
@@ -589,7 +603,19 @@ impl ReviewRoot {
             NSPoint::new(w - margin - send_w - gap - refresh_w, y),
             NSSize::new(refresh_w, btn_h),
         ));
-        let text_w = (w - margin * 2.0 - send_w - refresh_w - gap - 16.0).max(0.0);
+        let (pr_w, discard_w) = (110.0, 170.0);
+        let mut x = w - margin - send_w - gap - refresh_w;
+        iv.pr.setFrame(NSRect::new(
+            NSPoint::new(x - gap - pr_w, y),
+            NSSize::new(pr_w, btn_h),
+        ));
+        x -= gap + pr_w;
+        iv.discard.setFrame(NSRect::new(
+            NSPoint::new(x - gap - discard_w, y),
+            NSSize::new(discard_w, btn_h),
+        ));
+        x -= gap + discard_w;
+        let text_w = (x - margin - 16.0).max(0.0);
         iv.title.setFrame(NSRect::new(
             NSPoint::new(margin, h - 30.0),
             NSSize::new(text_w, 20.0),

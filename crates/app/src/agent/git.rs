@@ -124,6 +124,155 @@ pub fn collect_diff(repo: &Path, base: Option<&str>) -> io::Result<Vec<DiffFile>
     Ok(files)
 }
 
+// --- Descartar el worktree y abrir un PR ---
+
+/// ¿`workdir` es un worktree que Claude Code creó dentro de `project`
+/// (`<project>/.claude/worktrees/<nombre>`)? Solo esos se pueden borrar desde
+/// la app: nunca el proyecto ni una carpeta cualquiera.
+pub fn is_discardable_worktree(project: &Path, workdir: &Path) -> bool {
+    let (Ok(project), Ok(workdir)) = (project.canonicalize(), workdir.canonicalize()) else {
+        return false;
+    };
+    workdir != project
+        && workdir
+            .strip_prefix(project.join(".claude").join("worktrees"))
+            .is_ok_and(|rest| rest.components().count() == 1)
+}
+
+/// Quita el worktree (los cambios sin commit se pierden). **La rama se
+/// conserva**: sus commits siguen siendo recuperables.
+pub fn remove_worktree(project: &Path, workdir: &Path) -> Result<(), String> {
+    if !is_discardable_worktree(project, workdir) {
+        return Err("Solo se pueden descartar los worktrees de `.claude/worktrees`.".into());
+    }
+    let out = git(
+        project,
+        &["worktree", "remove", "--force", &workdir.to_string_lossy()],
+    )
+    .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_owned())
+    }
+}
+
+/// Archivos con cambios sin commit (incluidos los sin seguimiento).
+pub fn dirty_count(repo: &Path) -> usize {
+    git(repo, &["status", "--porcelain"])
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).lines().count())
+        .unwrap_or(0)
+}
+
+/// Commits de `HEAD` que no están en `base`.
+pub fn commits_ahead(repo: &Path, base: &str) -> Option<usize> {
+    stdout_ok(repo, &["rev-list", "--count", &format!("{base}..HEAD")])?
+        .parse()
+        .ok()
+}
+
+/// `origin/main` → `main`.
+fn short_branch(base: &str) -> &str {
+    base.strip_prefix("origin/").unwrap_or(base)
+}
+
+/// Lo que se ejecutaría para abrir el PR; se enseña antes de confirmar.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PrPlan {
+    pub branch: String,
+    pub base: String,
+    pub commits: usize,
+    /// Archivos con cambios sin commit: no entrarían en el PR.
+    pub dirty: usize,
+}
+
+impl PrPlan {
+    pub fn commands(&self) -> [String; 2] {
+        [
+            format!("git push -u origin {}", self.branch),
+            format!(
+                "gh pr create --fill --head {} --base {}",
+                self.branch, self.base
+            ),
+        ]
+    }
+}
+
+pub fn pr_plan(workdir: &Path, base: Option<&str>) -> Result<PrPlan, String> {
+    let branch = current_branch(workdir).ok_or("El agente no está en una rama.")?;
+    let base = short_branch(base.ok_or("No se encontró la rama base.")?).to_owned();
+    if branch == base {
+        return Err(format!(
+            "El agente trabaja directamente en `{base}`: no hay rama propia de la que abrir un PR."
+        ));
+    }
+    let commits = commits_ahead(workdir, &base)
+        .or_else(|| commits_ahead(workdir, &format!("origin/{base}")))
+        .ok_or("No se pudo comparar con la rama base.")?;
+    if commits == 0 {
+        return Err(
+            "La rama no tiene commits nuevos respecto a la base. Pídele a Claude que haga commit \
+             de sus cambios."
+                .into(),
+        );
+    }
+    Ok(PrPlan {
+        branch,
+        base,
+        commits,
+        dirty: dirty_count(workdir),
+    })
+}
+
+/// El ejecutable de `gh` (una app lanzada desde el Finder no tiene el PATH del usuario).
+pub fn find_gh() -> Option<std::path::PathBuf> {
+    ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"]
+        .iter()
+        .map(std::path::PathBuf::from)
+        .find(|p| p.is_file())
+}
+
+/// Sube la rama y abre el PR. Devuelve la URL.
+pub fn open_pr(workdir: &Path, plan: &PrPlan) -> Result<String, String> {
+    let gh =
+        find_gh().ok_or("No se encontró `gh` (GitHub CLI). Instálalo con `brew install gh`.")?;
+    let push = git(workdir, &["push", "-u", "origin", &plan.branch]).map_err(|e| e.to_string())?;
+    if !push.status.success() {
+        return Err(format!(
+            "git push falló:\n{}",
+            String::from_utf8_lossy(&push.stderr).trim()
+        ));
+    }
+    let out = Command::new(gh)
+        .current_dir(workdir)
+        .args([
+            "pr",
+            "create",
+            "--fill",
+            "--head",
+            &plan.branch,
+            "--base",
+            &plan.base,
+        ])
+        .env("GH_PROMPT_DISABLED", "1")
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(format!(
+            "gh pr create falló:\n{}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .rev()
+        .find(|l| l.starts_with("http"))
+        .unwrap_or("")
+        .to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,5 +428,84 @@ mod tests {
         assert_eq!(merge_base(&d, &raro), None);
         assert!(!marca.exists());
         fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn only_claude_worktrees_can_be_discarded() {
+        let d = repo("discard");
+        let wt = d.join(".claude").join("worktrees").join("tarea");
+        run(
+            &d,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "worktree-tarea",
+                &wt.to_string_lossy(),
+            ],
+        );
+        assert!(is_discardable_worktree(&d, &wt));
+        assert!(!is_discardable_worktree(&d, &d));
+        assert!(!is_discardable_worktree(&d, &d.join(".claude")));
+        assert!(!is_discardable_worktree(&d, Path::new("/tmp")));
+        assert!(!is_discardable_worktree(&d, &d.join("no-existe")));
+        // Una carpeta cualquiera dentro del proyecto tampoco.
+        fs::create_dir_all(d.join("src")).unwrap();
+        assert!(!is_discardable_worktree(&d, &d.join("src")));
+        assert!(remove_worktree(&d, &d).is_err());
+
+        fs::write(wt.join("sin-commit.txt"), "x").unwrap();
+        remove_worktree(&d, &wt).unwrap();
+        assert!(!wt.exists());
+        // La rama se conserva.
+        assert!(
+            git(
+                &d,
+                &["rev-parse", "--verify", "-q", "refs/heads/worktree-tarea"]
+            )
+            .unwrap()
+            .status
+            .success()
+        );
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn pr_plan_needs_an_own_branch_with_commits() {
+        let d = repo("prplan");
+        // En la rama base: no hay PR posible.
+        assert!(
+            pr_plan(&d, Some("main"))
+                .unwrap_err()
+                .contains("directamente")
+        );
+        run(&d, &["checkout", "-q", "-b", "worktree-x"]);
+        assert!(
+            pr_plan(&d, Some("main"))
+                .unwrap_err()
+                .contains("sin commits")
+                || pr_plan(&d, Some("main"))
+                    .unwrap_err()
+                    .contains("no tiene commits")
+        );
+        fs::write(d.join("nuevo.txt"), "hola\n").unwrap();
+        run(&d, &["add", "."]);
+        run(&d, &["commit", "-q", "-m", "nuevo"]);
+        fs::write(d.join("sin-commit.txt"), "x").unwrap();
+        let plan = pr_plan(&d, Some("origin/main")).unwrap();
+        assert_eq!(
+            plan,
+            PrPlan {
+                branch: "worktree-x".into(),
+                base: "main".into(),
+                commits: 1,
+                dirty: 1
+            }
+        );
+        assert_eq!(plan.commands()[0], "git push -u origin worktree-x");
+        assert!(plan.commands()[1].ends_with("--head worktree-x --base main"));
+        assert!(pr_plan(&d, None).is_err());
+        let _ = fs::remove_dir_all(&d);
     }
 }

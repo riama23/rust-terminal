@@ -392,6 +392,7 @@ impl AttentionBar {
 pub struct DoneIvars {
     label: Retained<NSTextField>,
     review: Retained<NSButton>,
+    pr: Retained<NSButton>,
 }
 
 define_class!(
@@ -431,16 +432,20 @@ define_class!(
 pub const DONE_BAR_HEIGHT: f64 = 52.0;
 
 impl DoneBar {
-    pub fn new(mtm: MainThreadMarker, target: &AnyObject, review: Sel) -> Retained<Self> {
-        // SAFETY: `target` implementa `review`.
-        let button = unsafe {
-            NSButton::buttonWithTitle_target_action(
-                &NSString::from_str("Revisar cambios  \u{2318}\u{21e7}R"),
-                Some(target),
-                Some(review),
-                mtm,
-            )
+    pub fn new(mtm: MainThreadMarker, target: &AnyObject, review: Sel, pr: Sel) -> Retained<Self> {
+        let make = |title: &str, action: Sel| {
+            // SAFETY: `target` implementa `action`.
+            unsafe {
+                NSButton::buttonWithTitle_target_action(
+                    &NSString::from_str(title),
+                    Some(target),
+                    Some(action),
+                    mtm,
+                )
+            }
         };
+        let button = make("Revisar cambios  \u{2318}\u{21e7}R", review);
+        let pr_button = make("Abrir PR\u{2026}", pr);
         let label = NSTextField::labelWithString(&NSString::from_str(""), mtm);
         label.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
         label.setTextColor(Some(&ns_color(dusk::TEXT, 1.0)));
@@ -448,6 +453,7 @@ impl DoneBar {
         let this = Self::alloc(mtm).set_ivars(DoneIvars {
             label,
             review: button,
+            pr: pr_button,
         });
         // SAFETY: inicializador designado de NSView.
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
@@ -456,6 +462,7 @@ impl DoneBar {
         this.setAppearance(dark.as_deref());
         this.addSubview(&this.ivars().label);
         this.addSubview(&this.ivars().review);
+        this.addSubview(&this.ivars().pr);
         this
     }
 
@@ -467,17 +474,22 @@ impl DoneBar {
     fn relayout(&self) {
         let b = self.bounds();
         let iv = self.ivars();
-        let (h, margin, w) = (28.0, 16.0, 190.0);
+        let (h, margin, w, pr_w, gap) = (28.0, 16.0, 190.0, 110.0, 8.0);
+        let y = (b.size.height - h) / 2.0;
         iv.review.setFrame(NSRect::new(
-            NSPoint::new(
-                (b.size.width - margin - w).max(margin),
-                (b.size.height - h) / 2.0,
-            ),
+            NSPoint::new((b.size.width - margin - w).max(margin), y),
             NSSize::new(w, h),
+        ));
+        iv.pr.setFrame(NSRect::new(
+            NSPoint::new((b.size.width - margin - w - gap - pr_w).max(margin), y),
+            NSSize::new(pr_w, h),
         ));
         iv.label.setFrame(NSRect::new(
             NSPoint::new(margin, (b.size.height - 20.0) / 2.0),
-            NSSize::new((b.size.width - margin * 3.0 - w).max(0.0), 20.0),
+            NSSize::new(
+                (b.size.width - margin * 3.0 - w - gap - pr_w).max(0.0),
+                20.0,
+            ),
         ));
     }
 }

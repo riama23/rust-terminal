@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 use std::time::Duration;
 
 use objc2::rc::{Retained, Weak};
@@ -19,7 +20,7 @@ use crate::agent::broker::AgentKey;
 use crate::agent::diff::DiffFile;
 use crate::agent::git;
 use crate::agent::review::{self, Review, ReviewError, Side};
-use crate::review_ui::{FileRow, ReviewRoot};
+use crate::review_ui::{FileRow, ReviewActions, ReviewRoot};
 use crate::view::TerminalView;
 
 pub struct ReviewState {
@@ -50,6 +51,10 @@ enum Purpose {
 type LoadResult = (AgentKey, Purpose, Result<Loaded, String>);
 
 static RESULTS: Mutex<Vec<LoadResult>> = Mutex::new(Vec::new());
+
+/// Resultado de subir la rama y abrir el PR (URL o error).
+static PR_RESULTS: Mutex<Vec<(AgentKey, Result<String, String>)>> = Mutex::new(Vec::new());
+static PR_RUNNING: AtomicBool = AtomicBool::new(false);
 
 fn load(workdir: &Path) -> Result<Loaded, String> {
     let base = git::detect_base_branch(workdir);
@@ -127,8 +132,210 @@ impl TerminalView {
             });
     }
 
+    /// Pregunta con dos botones; `true` si se pulsa el primero.
+    fn confirm(&self, message: &str, info: &str, yes: &str, destructive: bool) -> bool {
+        let alert = NSAlert::new(self.mtm());
+        alert.setMessageText(&NSString::from_str(message));
+        alert.setInformativeText(&NSString::from_str(info));
+        let first = alert.addButtonWithTitle(&NSString::from_str(yes));
+        first.setHasDestructiveAction(destructive);
+        alert.addButtonWithTitle(&NSString::from_str("Cancelar"));
+        alert.runModal() == NSAlertFirstButtonReturn
+    }
+
+    fn focused_agent_key(&self) -> Option<AgentKey> {
+        let focused = self.focused_pane();
+        let hub = self.agents().hub_ref();
+        hub.session_of_pane(focused).map(|s| s.key.clone())
+    }
+
+    fn review_agent_key(&self) -> Option<AgentKey> {
+        self.agents()
+            .review
+            .borrow()
+            .as_ref()
+            .map(|s| s.agent.clone())
+    }
+
+    /// «Abrir PR…» de la barra de terminado.
+    pub fn open_pr_focused(&self) {
+        match self.focused_agent_key() {
+            Some(key) => self.open_pr_for(key),
+            None => self.info(
+                "Esta pestaña no es un agente",
+                "Abrir un PR está disponible en las pestañas de agentes de Claude Code.",
+            ),
+        }
+    }
+
+    /// «Abrir PR…» de la cabecera de Review.
+    pub fn open_pr_review(&self) {
+        if let Some(key) = self.review_agent_key() {
+            self.open_pr_for(key);
+        }
+    }
+
+    /// Confirma con las órdenes exactas y sube la rama y abre el PR en un hilo.
+    fn open_pr_for(&self, key: AgentKey) {
+        if PR_RUNNING.load(SeqCst) {
+            self.info("Ya se está abriendo un PR", "Espera a que termine.");
+            return;
+        }
+        let Some(workdir) = self.agents().workdir_of(&key) else {
+            self.info(
+                "No se puede abrir el PR",
+                "Este agente no tiene carpeta de trabajo.",
+            );
+            return;
+        };
+        let base = git::detect_base_branch(&workdir);
+        let plan = match git::pr_plan(&workdir, base.as_deref()) {
+            Ok(p) => p,
+            Err(e) => {
+                self.info("No se puede abrir el PR", &e);
+                return;
+            }
+        };
+        let [push, create] = plan.commands();
+        let mut info = format!(
+            "Se ejecutará en {}:\n\n    {push}\n    {create}\n\n{} commit{} de «{}» hacia «{}».",
+            workdir.display(),
+            plan.commits,
+            if plan.commits == 1 { "" } else { "s" },
+            plan.branch,
+            plan.base
+        );
+        if plan.dirty > 0 {
+            info.push_str(&format!(
+                "\n\nAtención: {} archivo{} con cambios sin commit NO entrarán en el PR.",
+                plan.dirty,
+                if plan.dirty == 1 { "" } else { "s" }
+            ));
+        }
+        if !self.confirm(
+            &format!("¿Subir «{}» y abrir un PR?", plan.branch),
+            &info,
+            "Subir y abrir PR",
+            false,
+        ) {
+            return;
+        }
+        let Some(waker) = self.waker_arc() else {
+            return;
+        };
+        PR_RUNNING.store(true, SeqCst);
+        let spawned = std::thread::Builder::new()
+            .name("open-pr".into())
+            .spawn(move || {
+                let result = git::open_pr(&workdir, &plan);
+                PR_RESULTS.lock().unwrap().push((key, result));
+                PR_RUNNING.store(false, SeqCst);
+                waker.on_main_thread(sel!(reviewReady));
+            });
+        if spawned.is_err() {
+            PR_RUNNING.store(false, SeqCst);
+            self.info("No se pudo abrir el PR", "No se pudo crear el hilo.");
+        }
+    }
+
+    /// El resultado de abrir un PR (hilo principal).
+    fn pr_finished(&self, result: Result<String, String>) {
+        match result {
+            Ok(url) if url.starts_with("https://") => {
+                let alert = NSAlert::new(self.mtm());
+                alert.setMessageText(&NSString::from_str("PR abierto"));
+                alert.setInformativeText(&NSString::from_str(&url));
+                alert.addButtonWithTitle(&NSString::from_str("Abrir en el navegador"));
+                alert.addButtonWithTitle(&NSString::from_str("Cerrar"));
+                if alert.runModal() == NSAlertFirstButtonReturn {
+                    let _ = std::process::Command::new("/usr/bin/open")
+                        .arg(&url)
+                        .status();
+                }
+            }
+            Ok(_) => self.info(
+                "PR abierto",
+                "La rama se subió y `gh` terminó bien, pero no devolvió la dirección del PR.",
+            ),
+            Err(e) => self.info("No se pudo abrir el PR", &e),
+        }
+    }
+
+    /// «Descartar worktree…» de la cabecera de Review.
+    pub fn discard_worktree_review(&self) {
+        let Some(key) = self.review_agent_key() else {
+            return;
+        };
+        let (Some(workdir), Some(project)) = (
+            self.agents().workdir_of(&key),
+            self.agents().project_of(&key),
+        ) else {
+            return;
+        };
+        let busy = match self.agents().status_of(&key) {
+            Some(crate::agent::model::Status::Working)
+            | Some(crate::agent::model::Status::NeedsYou { .. })
+            | Some(crate::agent::model::Status::PlanReady) => true,
+            _ => false,
+        };
+        if busy {
+            self.info(
+                "El agente sigue activo",
+                "Espera a que termine su turno antes de descartar su worktree.",
+            );
+            return;
+        }
+        if !git::is_discardable_worktree(&project, &workdir) {
+            self.info(
+                "No se puede descartar",
+                "Solo se pueden descartar los worktrees que Claude Code crea en `.claude/worktrees`. \
+                 Este agente trabaja en la carpeta del proyecto.",
+            );
+            return;
+        }
+        let dirty = git::dirty_count(&workdir);
+        let branch = git::current_branch(&workdir);
+        let mut info = format!("Se eliminará la carpeta {}.", workdir.display());
+        if dirty > 0 {
+            info.push_str(&format!(
+                "\n\n{dirty} archivo{} con cambios sin commit se perderá{}.",
+                if dirty == 1 { "" } else { "s" },
+                if dirty == 1 { "" } else { "n" }
+            ));
+        }
+        if let Some(b) = &branch {
+            info.push_str(&format!(
+                "\n\nLa rama «{b}» se conserva con sus commits (se borra a mano con `git branch -D {b}`)."
+            ));
+        }
+        if !self.confirm(
+            "¿Descartar este worktree?",
+            &info,
+            "Descartar worktree",
+            true,
+        ) {
+            return;
+        }
+        match git::remove_worktree(&project, &workdir) {
+            Ok(()) => {
+                if let Some(state) = self.agents().review.borrow_mut().take() {
+                    state.window.orderOut(None);
+                }
+                self.info(
+                    "Worktree descartado",
+                    "La carpeta se eliminó. Cierra la pestaña del agente cuando quieras.",
+                );
+            }
+            Err(e) => self.info("No se pudo descartar el worktree", &e),
+        }
+    }
+
     /// Hay diffs calculados (hilo principal).
     pub fn review_ready(&self) {
+        let prs = std::mem::take(&mut *PR_RESULTS.lock().unwrap());
+        for (_, result) in prs {
+            self.pr_finished(result);
+        }
         let results = std::mem::take(&mut *RESULTS.lock().unwrap());
         for (key, purpose, result) in results {
             match (purpose, result) {
@@ -223,7 +430,16 @@ impl TerminalView {
     fn build_review_window(&self, title: &str) -> (Retained<NSWindow>, Retained<ReviewRoot>) {
         let mtm = self.mtm();
         let me: Retained<TerminalView> = self.retain();
-        let root = ReviewRoot::new(mtm, me.as_ref(), sel!(reviewRefresh:), sel!(reviewSend:));
+        let root = ReviewRoot::new(
+            mtm,
+            me.as_ref(),
+            ReviewActions {
+                refresh: sel!(reviewRefresh:),
+                send: sel!(reviewSend:),
+                pr: sel!(reviewOpenPR:),
+                discard: sel!(reviewDiscard:),
+            },
+        );
         let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1180.0, 740.0));
         root.setFrame(frame);
         // SAFETY: ventana propia, que no se libera al cerrarse.
