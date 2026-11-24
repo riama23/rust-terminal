@@ -202,6 +202,248 @@ Con la ventana en segundo plano, la campana (BEL) hace rebotar el icono del Dock
 - **Por defecto:** `true`
 - **Se aplica:** en vivo
 
+## `[keybindings]`
+
+### `command_palette`
+
+Paleta de comandos. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `"cmd+shift+p"`
+- **Se aplica:** en vivo
+
+### `new_agent`
+
+Nuevo agente. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `"cmd+n"`
+- **Se aplica:** en vivo
+
+### `review_changes`
+
+Revisar cambios del agente. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `"cmd+shift+r"`
+- **Se aplica:** en vivo
+
+### `new_tab`
+
+Nueva pestaña. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `"cmd+t"`
+- **Se aplica:** en vivo
+
+### `split_vertical`
+
+Dividir en vertical. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `"cmd+d"`
+- **Se aplica:** en vivo
+
+### `split_horizontal`
+
+Dividir en horizontal. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `"cmd+shift+d"`
+- **Se aplica:** en vivo
+
+### `close_pane`
+
+Cerrar el panel. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `"cmd+w"`
+- **Se aplica:** en vivo
+
+### `close_tab`
+
+Cerrar la pestaña. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `"cmd+shift+w"`
+- **Se aplica:** en vivo
+
+### `copy_last_output`
+
+Copiar la salida del último comando. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `"cmd+shift+c"`
+- **Se aplica:** en vivo
+
+### `previous_block`
+
+Bloque anterior. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `"cmd+up"`
+- **Se aplica:** en vivo
+
+### `next_block`
+
+Bloque siguiente. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `"cmd+down"`
+- **Se aplica:** en vivo
+
+### `block_rerun`
+
+Relanzar el bloque seleccionado. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `""`
+- **Se aplica:** en vivo
+
+### `block_rerun_failed`
+
+Relanzar solo los tests fallidos del bloque. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `""`
+- **Se aplica:** en vivo
+
+### `block_copy`
+
+Copiar la salida del bloque seleccionado. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `""`
+- **Se aplica:** en vivo
+
+### `block_stop`
+
+Detener el bloque en ejecución. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `""`
+- **Se aplica:** en vivo
+
+### `block_collapse`
+
+Colapsar o expandir la salida del bloque. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `""`
+- **Se aplica:** en vivo
+
+### `block_open`
+
+Abrir el error del bloque en el editor. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `"cmd+o"`
+- **Se aplica:** en vivo
+
+### `previous_tab`
+
+Pestaña anterior. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `"cmd+shift+["`
+- **Se aplica:** en vivo
+
+### `next_tab`
+
+Pestaña siguiente. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `"cmd+shift+]"`
+- **Se aplica:** en vivo
+
+### `focus_left`
+
+Panel de la izquierda. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `"cmd+alt+left"`
+- **Se aplica:** en vivo
+
+### `focus_right`
+
+Panel de la derecha. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `"cmd+alt+right"`
+- **Se aplica:** en vivo
+
+### `focus_up`
+
+Panel de arriba. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `"cmd+alt+up"`
+- **Se aplica:** en vivo
+
+### `focus_down`
+
+Panel de abajo. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `"cmd+alt+down"`
+- **Se aplica:** en vivo
+
+### `toggle_zoom`
+
+Ampliar o restaurar el panel. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `"cmd+shift+return"`
+- **Se aplica:** en vivo
+
+### `resize_left`
+
+Mover el divisor a la izquierda. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `"cmd+ctrl+left"`
+- **Se aplica:** en vivo
+
+### `resize_right`
+
+Mover el divisor a la derecha. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `"cmd+ctrl+right"`
+- **Se aplica:** en vivo
+
+### `resize_up`
+
+Mover el divisor hacia arriba. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `"cmd+ctrl+up"`
+- **Se aplica:** en vivo
+
+### `resize_down`
+
+Mover el divisor hacia abajo. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `"cmd+ctrl+down"`
+- **Se aplica:** en vivo
+
+### `open_settings`
+
+Ajustes. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `"cmd+,"`
+- **Se aplica:** en vivo
+
+### `report_issue`
+
+Informar de un fallo. Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo.
+
+- **Tipo:** un texto
+- **Por defecto:** `"cmd+shift+i"`
+- **Se aplica:** en vivo
+
 ## Ejemplo
 
 ```toml

@@ -10,11 +10,13 @@ mod block_ui;
 mod blocks;
 mod command_palette;
 mod config;
+mod config_edit;
 mod container;
 mod font;
 mod hotkey;
 mod icon;
 mod input;
+mod keybindings;
 mod notify;
 mod palette;
 mod palette_controller;
@@ -25,6 +27,8 @@ mod report;
 mod review_controller;
 mod review_ui;
 mod session;
+mod settings_controller;
+mod settings_ui;
 mod shell;
 mod view;
 mod watcher;
@@ -173,11 +177,78 @@ fn submenu(bar: &NSMenu, mtm: MainThreadMarker, title: &str, items: Vec<Retained
     bar.addItem(&item);
 }
 
+/// Pone los atajos de `config` (sección `[keybindings]`) como equivalentes de
+/// teclado de los elementos del menú ligados a cada acción.
+pub(crate) fn apply_keybindings(mtm: MainThreadMarker, config: &Config) {
+    use crate::keybindings::{self as kb, ALT, CMD, CTRL, SHIFT};
+    fn walk(menu: &NSMenu, config: &Config) {
+        for item in menu.itemArray().iter() {
+            if let Some(sub) = item.submenu() {
+                walk(&sub, config);
+            }
+            let Some(action) = item.action() else {
+                continue;
+            };
+            let name = action.name().to_string_lossy().into_owned();
+            if !kb::ACTIONS.iter().any(|a| a.selector == name) {
+                continue;
+            }
+            match kb::shortcut_for_selector(&config.keybindings, &name) {
+                Some(s) => {
+                    let mut mask = NSEventModifierFlags::empty();
+                    for (bit, flag) in [
+                        (CMD, NSEventModifierFlags::Command),
+                        (SHIFT, NSEventModifierFlags::Shift),
+                        (CTRL, NSEventModifierFlags::Control),
+                        (ALT, NSEventModifierFlags::Option),
+                    ] {
+                        if s.mods & bit != 0 {
+                            mask |= flag;
+                        }
+                    }
+                    item.setKeyEquivalent(&NSString::from_str(&s.key));
+                    item.setKeyEquivalentModifierMask(mask);
+                }
+                None => {
+                    item.setKeyEquivalent(&NSString::from_str(""));
+                    item.setKeyEquivalentModifierMask(NSEventModifierFlags::empty());
+                }
+            }
+        }
+    }
+    if let Some(menu) = NSApplication::sharedApplication(mtm).mainMenu() {
+        walk(&menu, config);
+        // Solo en depuración: `RT_DUMP_MENU=archivo` vuelca los atajos puestos.
+        #[cfg(debug_assertions)]
+        if let Some(path) = std::env::var_os("RT_DUMP_MENU") {
+            fn dump(menu: &NSMenu, out: &mut String) {
+                for item in menu.itemArray().iter() {
+                    if let Some(sub) = item.submenu() {
+                        dump(&sub, out);
+                    }
+                    if let Some(a) = item.action() {
+                        out.push_str(&format!(
+                            "{} {:?} {}\n",
+                            a.name().to_string_lossy(),
+                            item.keyEquivalent().to_string(),
+                            item.keyEquivalentModifierMask().0
+                        ));
+                    }
+                }
+            }
+            let mut out = String::new();
+            dump(&menu, &mut out);
+            let _ = std::fs::write(path, out);
+        }
+    }
+}
+
 fn build_menu(app: &NSApplication, mtm: MainThreadMarker) {
     let bar = NSMenu::new(mtm);
 
     let app_item = NSMenuItem::new(mtm);
     let app_menu = NSMenu::new(mtm);
+    app_menu.addItem(&menu_item(mtm, "Ajustes…", sel!(openSettings:), ","));
     app_menu.addItem(&menu_item(mtm, "Salir", sel!(terminate:), "q"));
     app_item.setSubmenu(Some(&app_menu));
     bar.addItem(&app_item);
@@ -398,6 +469,7 @@ fn open_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
         Ok(loaded) => loaded,
         Err(e) => (Config::default(), vec![e]),
     };
+    apply_keybindings(mtm, &config);
     let spec = font::FontSpec {
         family: config.font_family.clone(),
         size_pt: config.font_size,
@@ -473,6 +545,15 @@ fn open_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
     // Ayuda de verificación: `RT_OPEN_SHEET=1` abre el formulario de nuevo agente.
     if std::env::var_os("RT_OPEN_SHEET").is_some() {
         view.new_agent_sheet();
+    }
+    // Ayuda de verificación: `RT_OPEN_SETTINGS=1` abre los ajustes y
+    // `RT_SETTINGS_CLICK=sección.clave` pulsa el control de esa opción.
+    if std::env::var_os("RT_OPEN_SETTINGS").is_some() {
+        view.open_settings();
+        #[cfg(debug_assertions)]
+        if let Ok(path) = std::env::var("RT_SETTINGS_CLICK") {
+            view.debug_settings_click(&path);
+        }
     }
     // Ayuda de verificación: `RT_OPEN_PALETTE=consulta` abre la paleta con esa consulta.
     if let Some(query) = std::env::var_os("RT_OPEN_PALETTE") {

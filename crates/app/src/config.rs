@@ -42,6 +42,23 @@ pub struct OptionSpec {
     pub description: &'static str,
 }
 
+/// Una opción de la sección `[keybindings]` (ver `keybindings.rs`).
+macro_rules! kb {
+    ($id:literal, $def:literal, $label:literal) => {
+        OptionSpec {
+            section: "keybindings",
+            key: $id,
+            kind: Kind::Str,
+            default: concat!("\"", $def, "\""),
+            apply: Apply::Live,
+            description: concat!(
+                $label,
+                ". Atajo como `cmd+shift+d` (⌘, ⇧, ⌃ como `ctrl`, ⌥ como `alt`; teclas `left`, `return`, `tab`…); vacío, sin atajo."
+            ),
+        }
+    };
+}
+
 pub const OPTIONS: &[OptionSpec] = &[
     OptionSpec {
         section: "font",
@@ -231,6 +248,72 @@ pub const OPTIONS: &[OptionSpec] = &[
         apply: Apply::Live,
         description: "Con la ventana en segundo plano, la campana (BEL) hace rebotar el icono del Dock.",
     },
+    kb!("command_palette", "cmd+shift+p", "Paleta de comandos"),
+    kb!("new_agent", "cmd+n", "Nuevo agente"),
+    kb!(
+        "review_changes",
+        "cmd+shift+r",
+        "Revisar cambios del agente"
+    ),
+    kb!("new_tab", "cmd+t", "Nueva pestaña"),
+    kb!("split_vertical", "cmd+d", "Dividir en vertical"),
+    kb!("split_horizontal", "cmd+shift+d", "Dividir en horizontal"),
+    kb!("close_pane", "cmd+w", "Cerrar el panel"),
+    kb!("close_tab", "cmd+shift+w", "Cerrar la pestaña"),
+    kb!(
+        "copy_last_output",
+        "cmd+shift+c",
+        "Copiar la salida del último comando"
+    ),
+    kb!("previous_block", "cmd+up", "Bloque anterior"),
+    kb!("next_block", "cmd+down", "Bloque siguiente"),
+    kb!("block_rerun", "", "Relanzar el bloque seleccionado"),
+    kb!(
+        "block_rerun_failed",
+        "",
+        "Relanzar solo los tests fallidos del bloque"
+    ),
+    kb!("block_copy", "", "Copiar la salida del bloque seleccionado"),
+    kb!("block_stop", "", "Detener el bloque en ejecución"),
+    kb!(
+        "block_collapse",
+        "",
+        "Colapsar o expandir la salida del bloque"
+    ),
+    kb!(
+        "block_open",
+        "cmd+o",
+        "Abrir el error del bloque en el editor"
+    ),
+    kb!("previous_tab", "cmd+shift+[", "Pestaña anterior"),
+    kb!("next_tab", "cmd+shift+]", "Pestaña siguiente"),
+    kb!("focus_left", "cmd+alt+left", "Panel de la izquierda"),
+    kb!("focus_right", "cmd+alt+right", "Panel de la derecha"),
+    kb!("focus_up", "cmd+alt+up", "Panel de arriba"),
+    kb!("focus_down", "cmd+alt+down", "Panel de abajo"),
+    kb!(
+        "toggle_zoom",
+        "cmd+shift+return",
+        "Ampliar o restaurar el panel"
+    ),
+    kb!(
+        "resize_left",
+        "cmd+ctrl+left",
+        "Mover el divisor a la izquierda"
+    ),
+    kb!(
+        "resize_right",
+        "cmd+ctrl+right",
+        "Mover el divisor a la derecha"
+    ),
+    kb!("resize_up", "cmd+ctrl+up", "Mover el divisor hacia arriba"),
+    kb!(
+        "resize_down",
+        "cmd+ctrl+down",
+        "Mover el divisor hacia abajo"
+    ),
+    kb!("open_settings", "cmd+,", "Ajustes"),
+    kb!("report_issue", "cmd+shift+i", "Informar de un fallo"),
 ];
 
 pub type Rgb = [u8; 3];
@@ -268,6 +351,8 @@ pub struct Config {
     pub pane_headers: bool,
     pub block_visual: bool,
     pub block_editor: String,
+    /// Atajos por acción (`[keybindings]`).
+    pub keybindings: std::collections::HashMap<String, String>,
     pub scrollback_lines: usize,
     pub clipboard_write: bool,
     pub clipboard_read: ClipboardRead,
@@ -286,6 +371,97 @@ enum Value {
     StrList(Vec<String>),
     Color(Rgb),
     Palette([Rgb; 16]),
+}
+
+/// El literal TOML para `input` escrito en la ventana de ajustes, ya
+/// validado contra el tipo y los límites de la opción.
+pub fn literal_for(spec: &OptionSpec, input: &str) -> Result<String, String> {
+    use toml::Value as T;
+    let input = input.trim();
+    let value = match spec.kind {
+        Kind::Bool => match input {
+            "true" | "sí" | "si" | "on" => T::Boolean(true),
+            "false" | "no" | "off" => T::Boolean(false),
+            _ => return Err("debe ser true o false".to_owned()),
+        },
+        Kind::Int { .. } => T::Integer(
+            input
+                .parse::<i64>()
+                .map_err(|_| "debe ser un número entero".to_owned())?,
+        ),
+        Kind::Float { .. } => T::Float(
+            input
+                .replace(',', ".")
+                .parse::<f64>()
+                .map_err(|_| "debe ser un número".to_owned())?,
+        ),
+        Kind::Str | Kind::Color | Kind::Choice(_) => T::String(input.to_owned()),
+        Kind::StrList => T::Array(
+            input
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| T::String(s.to_owned()))
+                .collect(),
+        ),
+        Kind::Palette => return Err("la paleta de 16 colores se edita en config.toml".to_owned()),
+    };
+    match validate(spec.kind, &value)? {
+        Value::Str(s) if spec.section == "keybindings" => {
+            crate::keybindings::parse(&s)?;
+        }
+        _ => {}
+    }
+    Ok(match &value {
+        T::Boolean(b) => b.to_string(),
+        T::Integer(i) => i.to_string(),
+        T::Float(f) => format!("{f:?}"),
+        T::String(s) => crate::config_edit::toml_string(s),
+        T::Array(a) => format!(
+            "[{}]",
+            a.iter()
+                .filter_map(|x| x.as_str())
+                .map(crate::config_edit::toml_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        _ => unreachable!("tipos validados arriba"),
+    })
+}
+
+/// El valor actual de una opción como texto para la ventana de ajustes: el
+/// del archivo si está puesto y, si no, el por defecto.
+pub fn display_value(spec: &OptionSpec, table: &toml::Table) -> String {
+    use toml::Value as T;
+    let from_file = table
+        .get(spec.section)
+        .and_then(|s| s.as_table())
+        .and_then(|s| s.get(spec.key));
+    let default: toml::Value = format!("v = {}", spec.default)
+        .parse::<toml::Table>()
+        .ok()
+        .and_then(|mut t| t.remove("v"))
+        .unwrap_or_else(|| T::String(String::new()));
+    match from_file.unwrap_or(&default) {
+        T::Boolean(b) => b.to_string(),
+        T::Integer(i) => i.to_string(),
+        T::Float(f) => format!("{f}"),
+        T::String(s) => s.clone(),
+        T::Array(a) => a
+            .iter()
+            .filter_map(|x| x.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+        other => other.to_string(),
+    }
+}
+
+/// ¿Está esta opción puesta en el archivo?
+pub fn is_set(spec: &OptionSpec, table: &toml::Table) -> bool {
+    table
+        .get(spec.section)
+        .and_then(|s| s.as_table())
+        .is_some_and(|s| s.contains_key(spec.key))
 }
 
 fn parse_color(s: &str) -> Option<Rgb> {
@@ -408,6 +584,9 @@ impl Config {
                 self.long_command_seconds = i as u64
             }
             ("bell", "dock_bounce", Value::Bool(b)) => self.bell_dock_bounce = b,
+            ("keybindings", id, Value::Str(s)) => {
+                self.keybindings.insert(id.to_owned(), s);
+            }
             (s, k, _) => unreachable!("opción {s}.{k} sin asignar en Config::set"),
         }
     }
@@ -446,11 +625,19 @@ impl Config {
                     continue;
                 };
                 match validate(spec.kind, v) {
+                    // Un atajo mal escrito se ignora y se explica por qué.
+                    Ok(Value::Str(s)) if section == "keybindings" => {
+                        match crate::keybindings::parse(&s) {
+                            Ok(_) => config.set(section, key, Value::Str(s)),
+                            Err(e) => errors.push(format!("`{section}.{key}` {e}")),
+                        }
+                    }
                     Ok(v) => config.set(section, key, v),
                     Err(e) => errors.push(format!("`{section}.{key}` {e}")),
                 }
             }
         }
+        errors.extend(crate::keybindings::conflicts(&config.keybindings));
         Ok((config, errors))
     }
 
@@ -506,6 +693,7 @@ impl Default for Config {
             pane_headers: false,
             block_visual: false,
             block_editor: String::new(),
+            keybindings: Default::default(),
             scrollback_lines: 0,
             clipboard_write: false,
             clipboard_read: ClipboardRead::Deny,
@@ -690,5 +878,72 @@ x = 1
             actual == expected,
             "docs/configuracion.md no está al día: RT_UPDATE_DOCS=1 cargo test -p rust-terminal config"
         );
+    }
+
+    fn spec(section: &str, key: &str) -> &'static OptionSpec {
+        OPTIONS
+            .iter()
+            .find(|o| o.section == section && o.key == key)
+            .unwrap()
+    }
+
+    #[test]
+    fn settings_input_becomes_a_validated_literal() {
+        assert_eq!(literal_for(spec("font", "size"), "15").unwrap(), "15.0");
+        assert_eq!(literal_for(spec("font", "size"), "14,5").unwrap(), "14.5");
+        assert!(
+            literal_for(spec("font", "size"), "500")
+                .unwrap_err()
+                .contains("entre")
+        );
+        assert!(literal_for(spec("font", "size"), "grande").is_err());
+        assert_eq!(
+            literal_for(spec("blocks", "visual"), "false").unwrap(),
+            "false"
+        );
+        assert!(literal_for(spec("blocks", "visual"), "quizá").is_err());
+        assert_eq!(
+            literal_for(spec("font", "family"), "JetBrains \"Mono\"").unwrap(),
+            r#""JetBrains \"Mono\"""#
+        );
+        assert_eq!(
+            literal_for(spec("shell", "args"), "-l, -i").unwrap(),
+            r#"["-l", "-i"]"#
+        );
+        assert!(literal_for(spec("colors", "background"), "rojo").is_err());
+        assert_eq!(
+            literal_for(spec("colors", "background"), "#101014").unwrap(),
+            "\"#101014\""
+        );
+        assert!(literal_for(spec("colors", "palette"), "x").is_err());
+        // Un atajo mal escrito no se acepta.
+        assert!(literal_for(spec("keybindings", "new_tab"), "t").is_err());
+        assert_eq!(
+            literal_for(spec("keybindings", "new_tab"), "cmd+shift+t").unwrap(),
+            "\"cmd+shift+t\""
+        );
+    }
+
+    #[test]
+    fn display_value_prefers_the_file_over_the_default() {
+        let table: toml::Table = "[font]\nsize = 15.5\n".parse().unwrap();
+        assert_eq!(display_value(spec("font", "size"), &table), "15.5");
+        assert!(is_set(spec("font", "size"), &table));
+        assert_eq!(display_value(spec("blocks", "visual"), &table), "true");
+        assert!(!is_set(spec("blocks", "visual"), &table));
+        assert_eq!(display_value(spec("shell", "args"), &table), "-l");
+    }
+
+    #[test]
+    fn keybinding_options_match_the_action_table() {
+        for a in crate::keybindings::ACTIONS {
+            let o = spec("keybindings", a.id);
+            assert_eq!(o.default, format!("\"{}\"", a.default), "{}", a.id);
+        }
+        let n = OPTIONS
+            .iter()
+            .filter(|o| o.section == "keybindings")
+            .count();
+        assert_eq!(n, crate::keybindings::ACTIONS.len());
     }
 }
