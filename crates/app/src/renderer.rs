@@ -288,6 +288,8 @@ pub struct TabBar {
     pub plus: [f32; 4],
     /// Fotograma del spinner (lo avanza la app mientras alguna pestaña está ocupada).
     pub spinner_phase: usize,
+    /// Texto a la derecha de la barra («fijado» en el quick terminal).
+    pub note: Option<String>,
 }
 
 /// Todo lo que hay que pintar en un frame.
@@ -309,6 +311,8 @@ pub struct Renderer {
     font: FontSpec,
     scale: f64,
     theme: Theme,
+    /// Opacidad del fondo (1: opaco; el quick terminal usa menos).
+    opacity: f32,
     /// Copia local de la pantalla de cada panel.
     panes: HashMap<u64, Vec<Vec<Cell>>>,
     /// Texto de los grupos de caracteres que aparecen en cada panel.
@@ -366,6 +370,7 @@ impl Renderer {
             font: font.clone(),
             scale,
             theme,
+            opacity: 1.0,
             device,
             queue,
             pipeline,
@@ -378,6 +383,11 @@ impl Renderer {
 
     /// Aplica la fuente, la escala (Retina o no) y el tema. Si cambia la
     /// fuente o la escala, se recrean las fuentes y se vacía el atlas.
+    /// Opacidad del fondo (0,3 – 1). Con menos de 1 el layer debe ser no opaco.
+    pub fn set_opacity(&mut self, opacity: f32) {
+        self.opacity = opacity.clamp(0.3, 1.0);
+    }
+
     pub fn set_appearance(&mut self, font: &FontSpec, scale: f64, theme: Theme) {
         if scale != self.scale || *font != self.font {
             self.scale = scale;
@@ -463,11 +473,13 @@ impl Renderer {
         color.setTexture(Some(texture));
         color.setLoadAction(MTLLoadAction::Clear);
         color.setStoreAction(MTLStoreAction::Store);
+        // Premultiplicado: con el fondo translúcido el color se escala por la opacidad.
+        let a = self.opacity;
         color.setClearColor(MTLClearColor {
-            red: bg[0] as f64,
-            green: bg[1] as f64,
-            blue: bg[2] as f64,
-            alpha: 1.0,
+            red: (bg[0] * a) as f64,
+            green: (bg[1] * a) as f64,
+            blue: (bg[2] * a) as f64,
+            alpha: a as f64,
         });
         let encoder = command_buffer.renderCommandEncoderWithDescriptor(&pass)?;
 
@@ -703,6 +715,18 @@ impl Renderer {
             palette::to_rgba(palette::tab_inactive_fg(), 1.0),
             glyphs,
         );
+        // Nota a la derecha de la barra (por ejemplo «fijado»).
+        if let Some(note) = &bar.note {
+            let w = note.chars().count() as f32 * cw;
+            self.push_text(
+                note,
+                bar.rect[0] + bar.rect[2] - w - cw,
+                bar.rect[1] + ((bar.rect[3] - ch) / 2.0).round(),
+                w,
+                palette::to_rgba(palette::accent(), 1.0),
+                glyphs,
+            );
+        }
     }
 
     fn build_pane(&mut self, pane: &PaneFrame, glyphs: &mut Vec<Quad>) {
@@ -1248,6 +1272,7 @@ mod tests {
                 tabs: vec![tab(prod)],
                 plus: [600.0, 0.0, 60.0, 60.0],
                 spinner_phase: 0,
+                note: None,
             }),
         };
         // El tinte del distintivo: el color `prod` al 18 %.
@@ -1484,6 +1509,7 @@ mod tests {
                 ],
                 plus: [2.0 * tab_w, 0.0, bar_h, bar_h],
                 spinner_phase: 0,
+                note: None,
             }),
         };
         // SAFETY: descriptor 2D estándar.

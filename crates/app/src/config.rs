@@ -203,6 +203,33 @@ pub const OPTIONS: &[OptionSpec] = &[
         description: "Orden para «Abrir en el editor» (⌘O) con `{path}`, `{line}` y `{col}`, por ejemplo `code -g {path}:{line}:{col}`. Vacío: `open -t` (el editor de texto por defecto, sin línea).",
     },
     OptionSpec {
+        section: "quick_terminal",
+        key: "enabled",
+        kind: Kind::Bool,
+        default: "true",
+        apply: Apply::NewTabs,
+        description: "Terminal rápido: un panel que baja desde el borde superior con ⌥Espacio desde cualquier aplicación. Se aplica al reiniciar. Con `false` no se reserva ⌥Espacio.",
+    },
+    OptionSpec {
+        section: "quick_terminal",
+        key: "height",
+        kind: Kind::Int {
+            min: 160,
+            max: 1600,
+        },
+        default: "410",
+        apply: Apply::Live,
+        description: "Alto del terminal rápido, en puntos (como mucho el 90 % de la pantalla). Se aplica la próxima vez que aparezca.",
+    },
+    OptionSpec {
+        section: "quick_terminal",
+        key: "opacity",
+        kind: Kind::Float { min: 0.5, max: 1.0 },
+        default: "0.88",
+        apply: Apply::NewTabs,
+        description: "Opacidad del fondo del terminal rápido (con desenfoque detrás). Se aplica al volver a crearlo (reinicia la app o ciérralo con `exit`).",
+    },
+    OptionSpec {
         section: "ssh",
         key: "production_hosts",
         kind: Kind::StrList,
@@ -328,6 +355,16 @@ pub const OPTIONS: &[OptionSpec] = &[
         "cmd+ctrl+down",
         "Mover el divisor hacia abajo"
     ),
+    kb!(
+        "quick_pin",
+        "cmd+alt+p",
+        "Fijar o soltar el terminal rápido"
+    ),
+    kb!(
+        "quick_to_window",
+        "cmd+alt+w",
+        "Mover el terminal rápido a una ventana"
+    ),
     kb!("open_settings", "cmd+,", "Ajustes"),
     kb!("report_issue", "cmd+shift+i", "Informar de un fallo"),
 ];
@@ -411,6 +448,9 @@ pub struct Config {
     pub keybindings: std::collections::HashMap<String, String>,
     pub appearance: Appearance,
     pub production_hosts: Vec<String>,
+    pub quick_enabled: bool,
+    pub quick_height: f64,
+    pub quick_opacity: f64,
     /// Claves de `[colors]` que el usuario puso en el archivo: no las pisa el tema.
     pub colors_set: Vec<String>,
     pub scrollback_lines: usize,
@@ -644,6 +684,9 @@ impl Config {
                 self.long_command_seconds = i as u64
             }
             ("bell", "dock_bounce", Value::Bool(b)) => self.bell_dock_bounce = b,
+            ("quick_terminal", "enabled", Value::Bool(b)) => self.quick_enabled = b,
+            ("quick_terminal", "height", Value::Int(i)) => self.quick_height = i as f64,
+            ("quick_terminal", "opacity", Value::Float(f)) => self.quick_opacity = f,
             ("ssh", "production_hosts", Value::StrList(l)) => self.production_hosts = l,
             ("appearance", "theme", Value::Str(s)) => {
                 self.appearance = match s.as_str() {
@@ -804,6 +847,9 @@ impl Default for Config {
             keybindings: Default::default(),
             appearance: Appearance::Dusk,
             production_hosts: Vec::new(),
+            quick_enabled: false,
+            quick_height: 0.0,
+            quick_opacity: 1.0,
             colors_set: Vec::new(),
             scrollback_lines: 0,
             clipboard_write: false,

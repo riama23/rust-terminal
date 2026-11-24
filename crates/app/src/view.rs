@@ -96,6 +96,12 @@ pub struct ViewIvars {
     /// Fotograma del spinner de las pestañas y si su reloj está en marcha.
     spinner_phase: Cell<usize>,
     spinner_running: Cell<bool>,
+    /// Opacidad del fondo (1; el quick terminal usa menos) y si esta vista
+    /// es la del quick terminal.
+    opacity: Cell<f32>,
+    quick: Cell<bool>,
+    /// Texto a la derecha de la barra de pestañas («fijado» en el quick terminal).
+    tab_note: RefCell<Option<String>>,
     /// Bloque seleccionado con ⌘↑/⌘↓: panel e identificador.
     pub(crate) selected_block: Cell<Option<(PaneId, u64)>>,
     /// Bloques colapsados (panel e identificador).
@@ -438,6 +444,22 @@ define_class!(
             self.settings_open_file();
         }
 
+        /// ⌘⌥P: fija o suelta el terminal rápido.
+        #[unsafe(method(quickPin:))]
+        fn quick_pin_action(&self, _sender: Option<&AnyObject>) {
+            if self.is_quick() {
+                crate::quick::toggle_pin();
+            }
+        }
+
+        /// ⌘⌥W: el terminal rápido pasa a ser una ventana normal.
+        #[unsafe(method(quickToWindow:))]
+        fn quick_to_window_action(&self, _sender: Option<&AnyObject>) {
+            if self.is_quick() {
+                crate::quick::promote(self.mtm());
+            }
+        }
+
         #[unsafe(method(commandPalette:))]
         fn command_palette_action(&self, _sender: Option<&AnyObject>) {
             self.toggle_palette();
@@ -696,6 +718,9 @@ impl TerminalView {
             last_focus: Cell::new(None),
             spinner_phase: Cell::new(0),
             spinner_running: Cell::new(false),
+            opacity: Cell::new(1.0),
+            quick: Cell::new(false),
+            tab_note: RefCell::new(None),
             selected_block: Cell::new(None),
             collapsed_blocks: Default::default(),
             agents: Default::default(),
@@ -706,13 +731,76 @@ impl TerminalView {
         unsafe { msg_send![super(this), initWithFrame: frame] }
     }
 
+    /// Esta vista es la del quick terminal.
+    pub(crate) fn is_quick(&self) -> bool {
+        self.ivars().quick.get()
+    }
+
+    /// Marca esta vista como la del quick terminal, con su opacidad de fondo.
+    pub(crate) fn set_quick(&self, opacity: f32) {
+        self.ivars().quick.set(true);
+        self.ivars().opacity.set(opacity);
+    }
+
+    /// `(blocks…)` no: `(alto, opacidad)` del terminal rápido según la configuración.
+    pub(crate) fn quick_config(&self) -> (f64, f64) {
+        let c = self.ivars().config.borrow();
+        (c.quick_height, c.quick_opacity)
+    }
+
+    pub(crate) fn quick_enabled(&self) -> bool {
+        self.ivars().config.borrow().quick_enabled
+    }
+
+    /// Texto a la derecha de la barra de pestañas.
+    pub(crate) fn set_tab_note(&self, note: Option<String>) {
+        *self.ivars().tab_note.borrow_mut() = note;
+        self.update_layout();
+    }
+
+    /// El terminal rápido pasa a ser una ventana normal: opaca y sin nota.
+    pub(crate) fn promote_from_quick(&self) {
+        self.ivars().quick.set(false);
+        self.ivars().opacity.set(1.0);
+        *self.ivars().tab_note.borrow_mut() = None;
+        if let Some(layer) = self.layer() {
+            layer.setOpaque(true);
+        }
+        self.update_layout();
+    }
+
+    pub(crate) fn request_frame_now(&self) {
+        self.request_frame();
+    }
+
+    /// Ya no queda ningún panel: se descarta el terminal rápido (la tecla global
+    /// crea otro); una ventana normal se cierra si queda otra y, si era la
+    /// última, la app termina.
+    fn no_panes_left(&self) {
+        if self.is_quick() {
+            crate::quick::dispose(self.mtm());
+            return;
+        }
+        let app = NSApplication::sharedApplication(self.mtm());
+        let mine = self.window();
+        let other = app.windows().iter().any(|w| {
+            w.isVisible()
+                && mine.as_ref().is_none_or(|m| **m != *w)
+                && crate::container::terminal_view(&w).is_some()
+        });
+        match (other, mine) {
+            (true, Some(w)) => w.close(),
+            _ => app.terminate(None),
+        }
+    }
+
     /// Arranca la primera sesión cuando el render ya existe.
     pub fn start(&self, waker: Arc<Waker>) {
         let _ = self.ivars().waker.set(waker);
         let id = self.alloc_id();
         *self.ivars().workspace.borrow_mut() = Some(Workspace::new(id));
         if !self.spawn_session(id, None) {
-            NSApplication::sharedApplication(self.mtm()).terminate(None);
+            self.no_panes_left();
             return;
         }
         self.update_layout();
@@ -1145,7 +1233,7 @@ impl TerminalView {
             self.reconcile_agents();
             self.update_layout();
         } else {
-            NSApplication::sharedApplication(self.mtm()).terminate(None);
+            self.no_panes_left();
         }
     }
 
@@ -1164,7 +1252,7 @@ impl TerminalView {
             self.reconcile_agents();
             self.update_layout();
         } else {
-            NSApplication::sharedApplication(self.mtm()).terminate(None);
+            self.no_panes_left();
         }
     }
 
@@ -1182,7 +1270,7 @@ impl TerminalView {
         for id in exited {
             self.ivars().sessions.borrow_mut().remove(&id);
             if !self.with_workspace_mut(|w| w.close_pane(id)) {
-                NSApplication::sharedApplication(self.mtm()).terminate(None);
+                self.no_panes_left();
                 return;
             }
         }
@@ -1252,6 +1340,7 @@ impl TerminalView {
             tabs,
             plus: [(n * tab_w) as f32, 0.0, plus_w as f32, bar_h as f32],
             spinner_phase: self.ivars().spinner_phase.get(),
+            note: self.ivars().tab_note.borrow().clone(),
         };
 
         let area = Rect {
@@ -1403,6 +1492,7 @@ impl TerminalView {
                 })
                 .collect(),
             tab_bar: g.tab_bar.clone(),
+            opacity: self.ivars().opacity.get(),
             theme: self.effective_theme(),
             font: self.font_spec(),
         });
