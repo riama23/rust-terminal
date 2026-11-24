@@ -470,6 +470,15 @@ fn open_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
         Err(e) => (Config::default(), vec![e]),
     };
     apply_keybindings(mtm, &config);
+    // El tema antes del primer frame: Dusk, Paper o el del sistema.
+    {
+        let system_dark = NSApplication::sharedApplication(mtm)
+            .effectiveAppearance()
+            .name()
+            .to_string()
+            .contains("Dark");
+        palette::set_paper(config.use_paper(system_dark));
+    }
     let spec = font::FontSpec {
         family: config.font_family.clone(),
         size_pt: config.font_size,
@@ -546,6 +555,8 @@ fn open_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
     if std::env::var_os("RT_OPEN_SHEET").is_some() {
         view.new_agent_sheet();
     }
+    // La apariencia de las ventanas según el tema (oscuras, claras o del sistema).
+    view.apply_theme();
     // Ayuda de verificación: `RT_OPEN_SETTINGS=1` abre los ajustes y
     // `RT_SETTINGS_CLICK=sección.clave` pulsa el control de esa opción.
     if std::env::var_os("RT_OPEN_SETTINGS").is_some() {

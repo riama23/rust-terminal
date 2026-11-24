@@ -483,6 +483,13 @@ impl TerminalView {
         (window, root)
     }
 
+    /// El tema cambió: si hay una ventana de Review abierta, se vuelve a pintar.
+    pub(crate) fn review_refresh_look(&self) {
+        if self.agents().review.borrow().is_some() {
+            self.review_render();
+        }
+    }
+
     /// Vuelca el modelo a las vistas.
     fn review_render(&self) {
         let slot = self.agents().review.borrow();

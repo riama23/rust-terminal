@@ -15,9 +15,10 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, NSObjectProtocol, Sel};
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSAlert, NSAlertFirstButtonReturn, NSApplication, NSCursor, NSEvent, NSEventModifierFlags,
-    NSMenuItem, NSPasteboard, NSPasteboardTypeString, NSRequestUserAttentionType, NSResponder,
-    NSTextInputClient, NSView, NSWorkspace,
+    NSAlert, NSAlertFirstButtonReturn, NSAppearance, NSAppearanceCustomization,
+    NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSCursor, NSEvent,
+    NSEventModifierFlags, NSMenuItem, NSPasteboard, NSPasteboardTypeString,
+    NSRequestUserAttentionType, NSResponder, NSTextInputClient, NSView, NSWorkspace,
 };
 use objc2_core_foundation::CGSize;
 use objc2_foundation::{
@@ -388,6 +389,14 @@ define_class!(
         }
 
         /// ⌘⇧P: la paleta de comandos.
+        /// El sistema cambió entre claro y oscuro: con `theme = "system"`, el tema lo sigue.
+        #[unsafe(method(viewDidChangeEffectiveAppearance))]
+        fn view_did_change_effective_appearance(&self) {
+            if self.apply_theme() {
+                self.theme_changed();
+            }
+        }
+
         /// ⌘,: la ventana de ajustes.
         #[unsafe(method(openSettings:))]
         fn open_settings_action(&self, _sender: Option<&AnyObject>) {
@@ -868,6 +877,71 @@ impl TerminalView {
 
     /// Aplica una configuración nueva: lo que va en vivo se nota al momento
     /// (fuente, colores, margen, avisos); shell e historial, en pestañas nuevas.
+    /// ¿Está el sistema en modo oscuro? (la apariencia de la aplicación no la
+    /// tapa la de una ventana, así que sirve también con Dusk o Paper fijos).
+    pub(crate) fn system_is_dark(&self) -> bool {
+        NSApplication::sharedApplication(self.mtm())
+            .effectiveAppearance()
+            .name()
+            .to_string()
+            .contains("Dark")
+    }
+
+    /// Los colores de la terminal con el tema activo.
+    fn effective_theme(&self) -> crate::config::Theme {
+        self.ivars()
+            .config
+            .borrow()
+            .effective_theme(crate::palette::is_paper())
+    }
+
+    /// Decide el tema (Dusk, Paper o el del sistema) y, si cambió, lo aplica a
+    /// todas las ventanas. Devuelve `true` si cambió.
+    pub fn apply_theme(&self) -> bool {
+        let (paper, forced) = {
+            let config = self.ivars().config.borrow();
+            let forced = match config.appearance {
+                crate::config::Appearance::System => None,
+                crate::config::Appearance::Dusk => Some(false),
+                crate::config::Appearance::Paper => Some(true),
+            };
+            (config.use_paper(self.system_is_dark()), forced)
+        };
+        let changed = paper != crate::palette::is_paper();
+        crate::palette::set_paper(paper);
+        // Las ventanas siguen al tema: oscuras con Dusk, claras con Paper, y
+        // con el del sistema se deja que AppKit decida.
+        let appearance: Option<Retained<NSAppearance>> = forced.and_then(|p| {
+            // SAFETY: constantes de AppKit.
+            NSAppearance::appearanceNamed(unsafe {
+                if p {
+                    NSAppearanceNameAqua
+                } else {
+                    NSAppearanceNameDarkAqua
+                }
+            })
+        });
+        let app = NSApplication::sharedApplication(self.mtm());
+        for window in app.windows().iter() {
+            window.setAppearance(appearance.as_deref());
+            if changed && let Some(content) = window.contentView() {
+                restyle(&content);
+            }
+        }
+        changed
+    }
+
+    /// Cambió el tema (a mano o con el sistema): repinta lo que se fijó al
+    /// crearlo.
+    fn theme_changed(&self) {
+        self.refresh_agent_ui();
+        self.review_refresh_look();
+        if let Some(page) = self.settings_current_page() {
+            self.settings_show_page(page);
+        }
+        self.update_layout();
+    }
+
     pub fn apply_config(&self, config: Config) {
         for s in self.ivars().sessions.borrow().values() {
             s.long_command_secs
@@ -875,7 +949,11 @@ impl TerminalView {
         }
         crate::apply_keybindings(self.mtm(), &config);
         *self.ivars().config.borrow_mut() = config;
-        self.update_layout();
+        if self.apply_theme() {
+            self.theme_changed();
+        } else {
+            self.update_layout();
+        }
     }
 
     // --- Sesiones ---
@@ -1284,7 +1362,7 @@ impl TerminalView {
                 })
                 .collect(),
             tab_bar: g.tab_bar.clone(),
-            theme: self.ivars().config.borrow().theme,
+            theme: self.effective_theme(),
             font: self.font_spec(),
         });
         *self.ivars().geometry.borrow_mut() = g;
@@ -2071,4 +2149,16 @@ fn pane_dims(r: Rect, g: &Geometry) -> (usize, usize) {
     let cols = ((r.w - 2.0 * g.pad) / m.cell_w as f64).floor().max(1.0) as usize;
     let rows = ((r.h - 2.0 * g.pad) / m.cell_h as f64).floor().max(1.0) as usize;
     (cols, rows)
+}
+
+/// Repinta un árbol de vistas con el tema nuevo: las que llevan apariencia
+/// propia (las de la app) la reciben de nuevo y todas se vuelven a dibujar.
+fn restyle(view: &NSView) {
+    if view.appearance().is_some() {
+        view.setAppearance(crate::palette::ui_appearance().as_deref());
+    }
+    view.setNeedsDisplay(true);
+    for sub in view.subviews().iter() {
+        restyle(&sub);
+    }
 }

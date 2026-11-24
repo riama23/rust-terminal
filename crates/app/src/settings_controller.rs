@@ -95,6 +95,11 @@ impl TerminalView {
         &self.ivars_settings().inner
     }
 
+    /// La página abierta de la ventana de ajustes, si está abierta.
+    pub(crate) fn settings_current_page(&self) -> Option<usize> {
+        self.settings_state().borrow().as_ref().map(|s| s.page)
+    }
+
     /// ⌘,: abre la ventana de ajustes (o la trae al frente).
     pub fn open_settings(&self) {
         if let Some(state) = self.settings_state().borrow().as_ref() {

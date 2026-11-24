@@ -61,6 +61,14 @@ macro_rules! kb {
 
 pub const OPTIONS: &[OptionSpec] = &[
     OptionSpec {
+        section: "appearance",
+        key: "theme",
+        kind: Kind::Choice(&["dusk", "paper", "system"]),
+        default: r#""dusk""#,
+        apply: Apply::Live,
+        description: "Tema de la interfaz: `dusk` (oscuro), `paper` (claro) o `system` (sigue al sistema). Los colores que pongas en `[colors]` mandan sobre los del tema.",
+    },
+    OptionSpec {
         section: "font",
         key: "family",
         kind: Kind::Str,
@@ -325,6 +333,14 @@ pub enum ClipboardRead {
     Allow,
 }
 
+/// Qué tema pide la configuración.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Appearance {
+    Dusk,
+    Paper,
+    System,
+}
+
 /// Colores del tema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Theme {
@@ -333,6 +349,38 @@ pub struct Theme {
     pub cursor: Rgb,
     pub selection: Rgb,
     pub palette: [Rgb; 16],
+}
+
+/// Colores de la terminal con el tema Paper (claro). La paleta ANSI se
+/// deriva de los colores de estado del spec y cada color cumple 4,5:1 sobre
+/// el fondo (lo comprueba un test); el «blanco» (7 y 15) es un gris oscuro
+/// porque un blanco no se leería sobre un fondo casi blanco.
+pub fn paper_theme() -> Theme {
+    let hex = |s: &str| parse_color(s).expect("color de Paper válido");
+    Theme {
+        background: hex("#fbfbfa"),
+        foreground: hex("#1c1d21"),
+        cursor: hex("#2f5fd0"),
+        selection: hex("#cfe0ff"),
+        palette: [
+            hex("#1c1d21"),
+            hex("#c8372d"),
+            hex("#1b7f45"),
+            hex("#8a6100"),
+            hex("#2f5fd0"),
+            hex("#8e3fb0"),
+            hex("#0b7a8a"),
+            hex("#555a63"),
+            hex("#6b7079"),
+            hex("#b02a20"),
+            hex("#17713c"),
+            hex("#7a5400"),
+            hex("#2450b8"),
+            hex("#7b2f9b"),
+            hex("#08656f"),
+            hex("#3a3e47"),
+        ],
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -353,6 +401,9 @@ pub struct Config {
     pub block_editor: String,
     /// Atajos por acción (`[keybindings]`).
     pub keybindings: std::collections::HashMap<String, String>,
+    pub appearance: Appearance,
+    /// Claves de `[colors]` que el usuario puso en el archivo: no las pisa el tema.
+    pub colors_set: Vec<String>,
     pub scrollback_lines: usize,
     pub clipboard_write: bool,
     pub clipboard_read: ClipboardRead,
@@ -584,6 +635,13 @@ impl Config {
                 self.long_command_seconds = i as u64
             }
             ("bell", "dock_bounce", Value::Bool(b)) => self.bell_dock_bounce = b,
+            ("appearance", "theme", Value::Str(s)) => {
+                self.appearance = match s.as_str() {
+                    "paper" => Appearance::Paper,
+                    "system" => Appearance::System,
+                    _ => Appearance::Dusk,
+                }
+            }
             ("keybindings", id, Value::Str(s)) => {
                 self.keybindings.insert(id.to_owned(), s);
             }
@@ -632,7 +690,12 @@ impl Config {
                             Err(e) => errors.push(format!("`{section}.{key}` {e}")),
                         }
                     }
-                    Ok(v) => config.set(section, key, v),
+                    Ok(v) => {
+                        if section == "colors" {
+                            config.colors_set.push(key.clone());
+                        }
+                        config.set(section, key, v)
+                    }
                     Err(e) => errors.push(format!("`{section}.{key}` {e}")),
                 }
             }
@@ -660,6 +723,41 @@ impl Config {
             }
             Err(e) => Err(format!("no se pudo leer: {e}")),
         }
+    }
+
+    /// ¿Se usa el tema claro? `system_dark`: el sistema está en modo oscuro.
+    pub fn use_paper(&self, system_dark: bool) -> bool {
+        match self.appearance {
+            Appearance::Dusk => false,
+            Appearance::Paper => true,
+            Appearance::System => !system_dark,
+        }
+    }
+
+    /// Los colores de la terminal para el tema activo. Con Paper, los que el
+    /// usuario no puso en `[colors]` son los de Paper.
+    pub fn effective_theme(&self, paper: bool) -> Theme {
+        if !paper {
+            return self.theme;
+        }
+        let mut t = paper_theme();
+        let set = |k: &str| self.colors_set.iter().any(|s| s == k);
+        if set("background") {
+            t.background = self.theme.background;
+        }
+        if set("foreground") {
+            t.foreground = self.theme.foreground;
+        }
+        if set("cursor") {
+            t.cursor = self.theme.cursor;
+        }
+        if set("selection") {
+            t.selection = self.theme.selection;
+        }
+        if set("palette") {
+            t.palette = self.theme.palette;
+        }
+        t
     }
 
     /// Shell a lanzar: la configurada o `$SHELL`.
@@ -694,6 +792,8 @@ impl Default for Config {
             block_visual: false,
             block_editor: String::new(),
             keybindings: Default::default(),
+            appearance: Appearance::Dusk,
+            colors_set: Vec::new(),
             scrollback_lines: 0,
             clipboard_write: false,
             clipboard_read: ClipboardRead::Deny,
@@ -776,8 +876,10 @@ mod tests {
             }
             text.push_str(&format!("{} = {}\n", spec.key, spec.default));
         }
-        let (c, errors) = Config::parse(&text).unwrap();
+        let (mut c, errors) = Config::parse(&text).unwrap();
         assert!(errors.is_empty(), "{errors:?}");
+        // Escribir todos los valores por defecto cuenta como poner los colores.
+        c.colors_set.clear();
         assert_eq!(c, Config::default());
         let docs = docs_markdown();
         for spec in OPTIONS {
@@ -945,5 +1047,91 @@ x = 1
             .filter(|o| o.section == "keybindings")
             .count();
         assert_eq!(n, crate::keybindings::ACTIONS.len());
+    }
+
+    /// Contraste WCAG entre dos colores.
+    fn contrast(a: Rgb, b: Rgb) -> f64 {
+        let lum = |c: Rgb| {
+            let f = |v: u8| {
+                let v = f64::from(v) / 255.0;
+                if v <= 0.03928 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2])
+        };
+        let (la, lb) = (lum(a), lum(b));
+        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    }
+
+    #[test]
+    fn every_paper_color_reads_on_the_paper_background() {
+        let t = paper_theme();
+        for (i, c) in t.palette.iter().enumerate() {
+            let r = contrast(*c, t.background);
+            assert!(r >= 4.5, "color ANSI {i} {c:?}: contraste {r:.2} < 4,5");
+        }
+        assert!(contrast(t.foreground, t.background) >= 4.5);
+        assert!(contrast(t.cursor, t.background) >= 3.0);
+        // El texto sobre la selección también se lee.
+        assert!(contrast(t.foreground, t.selection) >= 4.5);
+    }
+
+    #[test]
+    fn paper_tokens_text_is_readable() {
+        let p = &crate::palette::PAPER_TOKENS;
+        for (name, c) in [
+            ("text", p.text),
+            ("muted", p.muted),
+            ("accent", p.accent),
+            ("ok", p.ok),
+            ("error", p.error),
+            ("attention", p.attention),
+            ("warn", p.warn),
+            ("prod", p.prod),
+        ] {
+            assert!(contrast(c, p.bg) >= 4.5, "{name}: {:.2}", contrast(c, p.bg));
+        }
+        // `ghost` es decorativo (el spec lo exime).
+        let d = &crate::palette::DUSK;
+        for (name, c) in [
+            ("text", d.text),
+            ("muted", d.muted),
+            ("accent", d.accent),
+            ("ok", d.ok),
+            ("error", d.error),
+        ] {
+            assert!(contrast(c, d.bg) >= 4.5, "dusk {name}");
+        }
+    }
+
+    #[test]
+    fn the_theme_choice_and_user_colors() {
+        let (c, errs) =
+            Config::parse("[appearance]\ntheme = \"paper\"\n[colors]\nbackground = \"#101010\"\n")
+                .unwrap();
+        assert!(errs.is_empty(), "{errs:?}");
+        assert!(c.use_paper(true) && c.use_paper(false));
+        let t = c.effective_theme(true);
+        // El fondo lo puso el usuario; el resto es de Paper.
+        assert_eq!(t.background, [0x10, 0x10, 0x10]);
+        assert_eq!(t.foreground, paper_theme().foreground);
+        // Con Dusk no se toca nada.
+        let (d, _) = Config::parse("").unwrap();
+        assert!(!d.use_paper(false));
+        assert_eq!(d.effective_theme(false), d.theme);
+        // Follow system.
+        let (s, _) = Config::parse("[appearance]\ntheme = \"system\"\n").unwrap();
+        assert!(!s.use_paper(true), "sistema oscuro → Dusk");
+        assert!(s.use_paper(false), "sistema claro → Paper");
+        assert!(
+            Config::parse("[appearance]\ntheme = \"rosa\"\n")
+                .unwrap()
+                .1
+                .len()
+                == 1
+        );
     }
 }

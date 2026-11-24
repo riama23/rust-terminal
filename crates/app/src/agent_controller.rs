@@ -30,7 +30,7 @@ use crate::agent_ui::{
     InspectorData, InspectorView, SIDEBAR_WIDTH, SidebarRow, SidebarView,
 };
 use crate::container::ContainerView;
-use crate::palette::dusk;
+use crate::palette::tok;
 use crate::view::TerminalView;
 use crate::workspace::PaneId;
 
@@ -190,11 +190,11 @@ enum Bottom {
 
 fn status_color(status: &Status) -> [u8; 3] {
     match status {
-        Status::NeedsYou { .. } => dusk::ATTENTION,
-        Status::Working | Status::Running | Status::PlanReady => dusk::ACCENT,
-        Status::Error => dusk::ERROR,
-        Status::Done => dusk::OK,
-        Status::Ended => dusk::MUTED,
+        Status::NeedsYou { .. } => tok::attention(),
+        Status::Working | Status::Running | Status::PlanReady => tok::accent(),
+        Status::Error => tok::error(),
+        Status::Done => tok::ok(),
+        Status::Ended => tok::muted(),
     }
 }
 
