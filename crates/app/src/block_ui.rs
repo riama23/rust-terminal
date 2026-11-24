@@ -24,6 +24,9 @@ pub struct BlockBarInfo {
     pub running: bool,
     pub can_rerun: bool,
     pub can_open: bool,
+    pub can_rerun_failed: bool,
+    pub can_collapse: bool,
+    pub collapsed: bool,
 }
 
 /// Selectores que reciben los botones.
@@ -31,16 +34,20 @@ pub struct BlockBarInfo {
 pub struct BlockActions {
     pub stop: Sel,
     pub rerun: Sel,
+    pub rerun_failed: Sel,
     pub copy: Sel,
     pub open: Sel,
+    pub collapse: Sel,
 }
 
 pub struct BlockBarIvars {
     label: Retained<NSTextField>,
     stop: Retained<NSButton>,
     rerun: Retained<NSButton>,
+    rerun_failed: Retained<NSButton>,
     copy: Retained<NSButton>,
     open: Retained<NSButton>,
+    collapse: Retained<NSButton>,
     failed: std::cell::Cell<bool>,
 }
 
@@ -104,8 +111,10 @@ impl BlockBar {
             label,
             stop: make("Detener", actions.stop),
             rerun: make("Relanzar", actions.rerun),
+            rerun_failed: make("Relanzar fallidos", actions.rerun_failed),
             copy: make("Copiar salida", actions.copy),
             open: make("Abrir en el editor  \u{2318}O", actions.open),
+            collapse: make("Colapsar", actions.collapse),
             failed: std::cell::Cell::new(false),
         });
         // SAFETY: inicializador designado de NSView.
@@ -118,8 +127,10 @@ impl BlockBar {
             &*iv.label as &NSView,
             &iv.stop,
             &iv.rerun,
+            &iv.rerun_failed,
             &iv.copy,
             &iv.open,
+            &iv.collapse,
         ] {
             this.addSubview(v);
         }
@@ -133,8 +144,16 @@ impl BlockBar {
         iv.stop.setHidden(!info.running);
         iv.rerun.setHidden(info.running);
         iv.rerun.setEnabled(info.can_rerun);
+        iv.rerun_failed
+            .setHidden(info.running || !info.can_rerun_failed);
         iv.copy.setHidden(info.running);
         iv.open.setHidden(!info.can_open);
+        iv.collapse.setHidden(!info.can_collapse || info.running);
+        iv.collapse.setTitle(&NSString::from_str(if info.collapsed {
+            "Expandir"
+        } else {
+            "Colapsar"
+        }));
         self.setNeedsDisplay(true);
         self.relayout();
     }
@@ -147,7 +166,9 @@ impl BlockBar {
         let mut right = b.size.width - margin;
         for (button, w) in [
             (&iv.open, 190.0),
+            (&iv.collapse, 100.0),
             (&iv.copy, 120.0),
+            (&iv.rerun_failed, 140.0),
             (&iv.rerun, 90.0),
             (&iv.stop, 90.0),
         ] {

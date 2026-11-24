@@ -10,8 +10,8 @@ Este documento encaja el spec de producto (`docs/macOS Terminal — UI UX Spec f
 | v1.1 | Spike de hooks + ventana como contenedor de vistas | Hecho (rama `v1.1-contenedor`), verificación manual pendiente |
 | v1.2 | Broker, lanzar agente, sidebar, aprobar y denegar | Hecho (misma rama), verificación manual pendiente (`docs/verificacion-v1.2.md`) |
 | v1.3 | Notificaciones accionables, Dock badge, menu bar extra | Hecho (rama `v1.1-contenedor`), verificación manual pendiente (`docs/verificacion-v1.3.md`) |
-| v1.4 | Review de diff, comentarios en lote, inspector | Hecho salvo descartar worktree y abrir PR (rama `v1.1-contenedor`), verificación manual pendiente (`docs/verificacion-v1.4.md`) |
-| v1.5 | Bloques visuales, paleta de comandos, polish de splits | Pendiente |
+| v1.4 | Review de diff, comentarios en lote, inspector | Hecho, con descartar worktree y abrir PR; verificación manual pendiente (`docs/verificacion-v1.4.md`) |
+| v1.5 | Bloques visuales, paleta de comandos, polish de splits | Hecho con dos desviaciones (ver «Estado de la v1.5»); verificación manual pendiente (`docs/verificacion-v1.5.md`) |
 | v1.6 | Ajustes, tema Paper, quick terminal, keybindings | Pendiente |
 | v2 | API de control por agentes | Sin diseñar |
 
@@ -152,6 +152,13 @@ Es el núcleo de la tesis del producto.
 - **Spinner en las pestañas** mientras corre un proceso, según lo que dibuja el spec en la pantalla 01.
 
 **Decisión pendiente:** *Relanzar solo fallidos* (⌘⇧R) se fija aquí. Como ⌘⇧R ya es *Revisar* desde la v1.4, se decide si el rerun sigue en ese atajo o se asigna otro. La decisión se toma con el teclado configurable de la v1.6 en mente.
+
+**Estado de la v1.5 (implementada):**
+
+- **Hecho:** tinte de bloques fallidos y seleccionado; selección con ⌘↑/⌘↓; barra de acciones con *Detener*, *Relanzar*, *Relanzar fallidos* (`cargo test`, `pytest`, `jest`, `go test`), *Copiar salida*, *Abrir en el editor* (⌘O) y *Colapsar*; paleta de comandos con acciones, historial y flujos (`workflows.toml`); cabeceras, atenuado, zoom, resize por teclado y spinner en los splits y pestañas. *Relanzar fallidos* **sin atajo** (⌘⇧R sigue siendo *Revisar*), a la espera del teclado configurable de la v1.6.
+- **Desviación 1, sin cabecera dentro de la rejilla:** insertar una fila de cabecera antes de cada bloque desplazaría el contenido por debajo de lo que la terminal cree que es la pantalla (el cursor, el scroll y las aplicaciones a pantalla completa dejarían de coincidir). La información (estado, duración, comando) y las acciones van en la barra del bloque seleccionado. Se podría hacer con filas virtuales y un redimensionado de la PTY; queda como mejora futura.
+- **Desviación 2, sin «vuelta automática a Classic»:** sin las marcas OSC 133 no hay bloques y la terminal ya se comporta como Classic, así que no hay nada que desactivar. `blocks.visual = false` es el ajuste global; los ajustes «por perfil y por host» esperan a que existan perfiles (v1.6).
+- El colapso oculta las filas al pintar y al leer el ratón; la rejilla de la terminal no cambia, así que el hueco queda al final de la vista.
 
 **Criterio de salida:** un bloque fallido se puede abrir en el editor y relanzar, y la paleta ejecuta un comando del historial. Con los bloques desactivados, la terminal se comporta como en la v1.0.
 

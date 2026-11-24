@@ -1,6 +1,6 @@
 # Verificación manual: v1.5 (polish de splits)
 
-Hecho: atenuado, cabecera por panel, zoom, resize por teclado, spinner de pestañas y la primera capa de bloques visuales (tinte y barra de acciones). Pendiente: cabecera inline por bloque, colapsar, «relanzar solo fallidos» y vuelta automática a Classic.
+Hecho: atenuado, cabecera por panel, zoom, resize por teclado, spinner de pestañas y la primera capa de bloques visuales (tinte y barra de acciones). Ver al final «Colapsar, relanzar fallidos y flujos». Fuera, con su motivo: cabecera dentro de la rejilla y vuelta automática a Classic (`docs/roadmap.md`).
 
 - [ ] Con 2 o más paneles en la pestaña, cada uno lleva una **cabecera de 30 pt** con su título; el panel con el foco tiene la línea de acento. Con un solo panel (o con zoom) no hay cabecera. Se apaga con `window.pane_headers = false`.
 - [ ] Los paneles **sin foco se ven al 55 %**; el cursor de esos paneles es hueco. Se apaga con `window.dim_unfocused = false`. Con un solo panel no se atenúa.
@@ -26,7 +26,7 @@ No hay cabecera dentro de la rejilla (haría falta reescribir scroll, selección
 
 ## Paleta de comandos (⌘⇧P)
 
-Ámbitos: **Acciones** (las del menú) e **Historial** (comandos de los bloques de esta sesión y el final de `~/.zsh_history`). Los *flujos* del spec no existen todavía.
+Ámbitos: **Acciones** (las del menú), **Historial** (comandos de los bloques de esta sesión y el final de `~/.zsh_history`) y **Flujos** (`workflows.toml`, abajo).
 
 - [ ] **⌘⇧P** abre un diálogo de 640 pt centrado sobre un velo; volver a pulsarlo, **Esc** o un clic fuera lo cierra, y el teclado vuelve a la terminal.
 - [ ] Escribir filtra con búsqueda difusa (sin distinguir mayúsculas ni acentos: `pestana` encuentra «Nueva pestaña»). **↑ ↓** mueven la selección, **⇥** recorre *Todo → Acciones → Historial*.
@@ -36,4 +36,11 @@ No hay cabecera dentro de la rejilla (haría falta reescribir scroll, selección
 - [ ] El ranking sube lo que más y más recientemente usas (frecuencia). Se guarda en `~/.config/rust-terminal/palette-frecency.tsv` (0600, máx. 500 entradas, con los comandos que has lanzado desde la paleta); borra el archivo para olvidarlo.
 - [ ] **Seguridad:** no escribe en un panel que sea un agente ni con un programa en marcha (avisa), y rechaza comandos con saltos de línea o caracteres de control.
 - Comprobado con teclas sintéticas entregadas a `keyDown:` (solo debug: `RT_OPEN_PALETTE` y `RT_PALETTE_KEYS`): filtrar, historial de zsh y ejecutar un comando desde el estado vacío. Sin comprobar a mano: ⌘⇧P desde el teclado real, el clic en filas y ⌘↵.
+
+## Colapsar, relanzar fallidos y flujos
+
+- [ ] **Colapsar / Expandir** (botón de la barra, menú *Ver* o paleta) oculta la salida del bloque seleccionado salvo su primera línea, que pasa a ser «▸ salida colapsada · N líneas ocultas»; lo de debajo sube. Con un bloque de una sola línea de salida, o sin terminar, no hay botón. El ratón (selección, clic en enlaces) sigue acertando con filas colapsadas. Ocurre solo al pintar: la rejilla de la terminal no cambia, así que queda un hueco al final de la vista.
+- [ ] **Relanzar fallidos** aparece en un bloque fallido de `cargo test` (nombres de la lista `failures:`, antes de `--`), `pytest` (`--lf`), `jest` (`--onlyFailures`) o `go test` (`-run '^(…)$'`). Los nombres de test salen de la salida del programa, así que solo se aceptan letras, dígitos y `_ : / . -`; con cualquier otro carácter no hay botón. Sin atajo (⌘⇧R sigue siendo *Revisar*).
+- [ ] **Flujos:** `~/.config/rust-terminal/workflows.toml` con entradas `[[workflow]]` (`name`, `command` y opcional `description`) salen en la paleta con la etiqueta `FLOW`, y ⇥ llega al ámbito *Flujos*. Los inválidos (sin nombre o comando, con caracteres de control, repetidos o demasiado largos) se descartan con un aviso en stderr. Se ejecutan con las mismas protecciones que el historial.
+- Comprobado: el render con filas ocultas (test), la lógica de colapso y de relanzar fallidos (tests) y los flujos desde la paleta con teclas sintéticas. Sin comprobar a mano: el botón *Colapsar* y el ratón sobre un bloque colapsado.
 

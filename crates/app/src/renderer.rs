@@ -216,6 +216,8 @@ pub struct Overlay {
     pub links: Vec<(usize, usize, usize)>,
     /// Bloques con fondo propio (fallidos o seleccionados), en filas de la vista.
     pub blocks: Vec<BlockSpan>,
+    /// Filas ocultas por bloques colapsados (vacío: ninguna).
+    pub row_map: crate::blocks::RowMap,
 }
 
 /// Las filas de la vista que ocupa un bloque y cómo se tiñen.
@@ -679,13 +681,15 @@ impl Renderer {
 
         // Marcas de bloque en el margen izquierdo.
         let mark_w = (pad * 0.3).round().max(2.0);
+        let map = &overlay.row_map;
         for &(r, failed) in overlay.marks.iter() {
+            let Some(sr) = map.screen_of(r) else { continue };
             let color = if failed {
                 palette::MARK_FAILED
             } else {
                 palette::MARK_OK
             };
-            let y = oy + r as f32 * ch;
+            let y = oy + sr as f32 * ch;
             self.quads.push(fill(
                 [pane.rect[0] + (pad - mark_w) / 3.0, y, mark_w, ch],
                 palette::to_rgba(color, 1.0),
@@ -695,7 +699,8 @@ impl Renderer {
         // Subrayado del enlace bajo el ratón.
         let stroke = m.stroke as f32;
         for &(r, a, b) in &overlay.links {
-            let y = oy + r as f32 * ch + (m.baseline as f32 + stroke).min(ch - stroke);
+            let Some(sr) = map.screen_of(r) else { continue };
+            let y = oy + sr as f32 * ch + (m.baseline as f32 + stroke).min(ch - stroke);
             glyphs.push(fill(
                 [ox + a as f32 * cw, y, (b + 1 - a) as f32 * cw, stroke],
                 palette::to_rgba(palette::ACCENT, 1.0),
@@ -703,7 +708,27 @@ impl Renderer {
         }
 
         for (r, row) in rows.iter().enumerate() {
-            let y = oy + r as f32 * ch;
+            // Fila oculta por un bloque colapsado: no se pinta y las de debajo suben.
+            let Some(sr) = map.screen_of(r) else {
+                continue;
+            };
+            let y = oy + sr as f32 * ch;
+            // La primera línea de una salida colapsada enseña un resumen.
+            if let Some(&(_, hidden)) = map.summaries.iter().find(|(vr, _)| *vr == r) {
+                self.quads.push(fill(
+                    [pane.rect[0], y, pane.rect[2], ch],
+                    palette::to_rgba(palette::TAB_BAR, 1.0),
+                ));
+                self.push_text(
+                    &format!("▸ salida colapsada · {hidden} líneas ocultas"),
+                    ox,
+                    y,
+                    pane.rect[2] - 2.0 * pad,
+                    palette::to_rgba(palette::TAB_INACTIVE_FG, 1.0),
+                    glyphs,
+                );
+                continue;
+            }
             let selected = overlay
                 .selection
                 .iter()
@@ -788,8 +813,17 @@ impl Renderer {
         // Bloques: fondo tintado (rojo si falló, acento si está seleccionado)
         // sobre las celdas y bajo el texto.
         for span in &overlay.blocks {
-            let y = oy + span.first as f32 * ch;
-            let h = (span.last + 1 - span.first) as f32 * ch;
+            let (Some(first), Some(last)) = (
+                map.screen_at_or_after(span.first),
+                map.screen_at_or_before(span.last),
+            ) else {
+                continue;
+            };
+            if first > last {
+                continue;
+            }
+            let y = oy + first as f32 * ch;
+            let h = (last + 1 - first) as f32 * ch;
             let rect = [pane.rect[0], y, pane.rect[2], h];
             if span.failed {
                 self.quads.push(fill(
@@ -822,7 +856,12 @@ impl Renderer {
         let m = self.fonts.metrics;
         let (cw, ch) = (m.cell_w as f32, m.cell_h as f32);
         let (ox, oy) = (pane.rect[0] + pane.pad, pane.rect[1] + pane.pad);
-        let y = oy + pane.cursor.row as f32 * ch;
+        let cursor_row = pane
+            .overlay
+            .row_map
+            .screen_of(pane.cursor.row)
+            .unwrap_or(pane.cursor.row);
+        let y = oy + cursor_row as f32 * ch;
         let mut x = ox + pane.cursor.col as f32 * cw;
         let max_x = pane.rect[0] + pane.rect[2] - pane.pad;
         let theme = self.theme;
@@ -1113,6 +1152,34 @@ mod tests {
     }
 
     #[test]
+    fn collapsed_rows_are_skipped_and_the_rest_moves_up() {
+        // Cuatro líneas; la salida de la 1 a la 2 está colapsada.
+        let mut term = Term::new(4, 4);
+        term.advance(b"\x1b[?25lAAAA\r\nBBBB\r\nCCCC\r\nDDDD");
+        let map = crate::blocks::row_map(&[crate::blocks::Collapse { first: 1, last: 2 }], 0, 4);
+        let overlay = Overlay {
+            row_map: map,
+            ..Overlay::default()
+        };
+        let (layout, m, pixels) = render_with(&term, 2.0, &overlay);
+        let bg = bgra(theme().background);
+        let has_text = |row: u32| {
+            cell_pixels(layout, m, &pixels, row, 0)
+                .iter()
+                .any(|p| *p != bg && *p != bgra(palette::TAB_BAR))
+        };
+        assert!(has_text(0), "AAAA se queda");
+        // Fila 1: el resumen (fondo propio), no BBBB.
+        assert_eq!(
+            cell_pixels(layout, m, &pixels, 1, 0)[0],
+            bgra(palette::TAB_BAR)
+        );
+        // DDDD (fila 3 de la vista) sube a la fila 2 de pantalla; la 3 queda vacía.
+        assert!(has_text(2), "DDDD sube");
+        assert!(!has_text(3), "el hueco queda vacío");
+    }
+
+    #[test]
     fn selection_and_block_marks() {
         let mut term = Term::new(4, 2);
         term.advance(b"\x1b[?25l");
@@ -1121,6 +1188,7 @@ mod tests {
             marks: vec![(1, true)],
             links: vec![(1, 2, 3)],
             blocks: Vec::new(),
+            row_map: Default::default(),
         };
         let (layout, m, pixels) = render_with(&term, 2.0, &overlay);
         let sel = bgra(theme().selection);
@@ -1221,6 +1289,7 @@ mod tests {
             marks: vec![(0, false), (8, true)],
             links: Vec::new(),
             blocks: Vec::new(),
+            row_map: Default::default(),
         };
         let (layout, _m, pixels) = render_with(&term, 2.0, &overlay);
         let (w, h) = (layout.width_px as usize, layout.height_px as usize);

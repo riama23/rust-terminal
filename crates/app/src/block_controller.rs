@@ -142,7 +142,38 @@ impl TerminalView {
                 && !session.busy.load(SeqCst)
                 && blocks::rerun_bytes(&command).is_some(),
             can_open: failed && !running && self.location_of(&session, &block).is_some(),
+            can_rerun_failed: !running
+                && !session.busy.load(SeqCst)
+                && self.failed_only_of(&session, &block).is_some(),
+            can_collapse: Self::collapse_of(&block).is_some(),
+            collapsed: self
+                .ivars_collapsed()
+                .borrow()
+                .contains(&(self.focused_pane(), block.id)),
         })
+    }
+
+    /// «Colapsar» o «Expandir» la salida del bloque seleccionado.
+    pub fn block_toggle_collapse(&self) {
+        let Some((session, block)) = self.selected_block_of_focus() else {
+            return;
+        };
+        if Self::collapse_of(&block).is_none() {
+            return;
+        }
+        let key = (self.focused_pane(), block.id);
+        {
+            let mut set = self.ivars_collapsed().borrow_mut();
+            if !set.remove(&key) {
+                set.insert(key);
+            }
+        }
+        let _ = session;
+        self.update_layout();
+    }
+
+    fn collapse_of(block: &Block) -> Option<blocks::Collapse> {
+        blocks::collapse_of(block.output?.line, block.end.map(|e| (e.line, e.col)))
     }
 
     /// «Copiar salida» del bloque seleccionado.
@@ -155,8 +186,27 @@ impl TerminalView {
         }
     }
 
+    /// La orden que repite solo los tests fallidos del bloque, si se puede.
+    fn failed_only_of(&self, session: &Session, block: &Block) -> Option<String> {
+        let failed = block.exit_code.is_some_and(|c| c != 0);
+        if !failed || block.output.is_some() && !block.is_finished() {
+            return None;
+        }
+        let output = Self::block_output_text(session, block)?;
+        blocks::failed_only_command(block.command.as_deref()?, &output)
+    }
+
     /// «Relanzar»: escribe el comando del bloque en la PTY, solo con la shell libre.
     pub fn block_rerun(&self) {
+        self.block_rerun_with(false);
+    }
+
+    /// «Relanzar fallidos»: como «Relanzar», pero solo con los tests que fallaron.
+    pub fn block_rerun_failed(&self) {
+        self.block_rerun_with(true);
+    }
+
+    fn block_rerun_with(&self, failed_only: bool) {
         let Some((session, block)) = self.selected_block_of_focus() else {
             return;
         };
@@ -164,7 +214,12 @@ impl TerminalView {
         if running || session.busy.load(SeqCst) {
             return;
         }
-        if let Some(bytes) = block.command.as_deref().and_then(blocks::rerun_bytes) {
+        let command = if failed_only {
+            self.failed_only_of(&session, &block)
+        } else {
+            block.command.clone()
+        };
+        if let Some(bytes) = command.as_deref().and_then(blocks::rerun_bytes) {
             session.write(&bytes);
             // La salida nueva es otro bloque: se vuelve al final.
             session.term.lock().unwrap().scroll_to_bottom();
