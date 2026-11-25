@@ -9,7 +9,7 @@ command -v cargo >/dev/null || . "$HOME/.cargo/env"
 PROFILE="${1:-release}"
 NAME="$(sed -n 's/^pub const PRODUCT_NAME: \&str = "\(.*\)";/\1/p' crates/core/src/lib.rs)"
 BUNDLE_ID="local.$NAME"
-VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' crates/app/Cargo.toml | head -1)"
+VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
 
 if [[ "$PROFILE" == "release" ]]; then
     cargo build --release -p rust-terminal -p rust-terminal-ctl

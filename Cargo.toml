@@ -3,3 +3,7 @@ members = ["crates/*"]
 # vtebench se clona aquí para los benchmarks (scripts/bench.sh) y no es parte del workspace.
 exclude = ["target/vtebench"]
 resolver = "3"
+
+# Única fuente de verdad de la versión (SemVer). Ver «Releases» en el README.
+[workspace.package]
+version = "0.1.0"
