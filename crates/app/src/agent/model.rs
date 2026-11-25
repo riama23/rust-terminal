@@ -133,6 +133,42 @@ pub fn parse_todos(tool_input: &Value) -> Vec<Todo> {
         .collect()
 }
 
+/// Quita el énfasis y el código en línea de markdown (`**`, `__`, `` ` ``).
+fn strip_markdown(text: &str) -> String {
+    text.replace("**", "").replace("__", "").replace('`', "")
+}
+
+/// Los pasos del plan de una llamada a `ExitPlanMode` (`tool_input.plan`, un
+/// texto en markdown). Son los pasos numerados de primer nivel (`1. …`) o, si no
+/// hay, los títulos `##`. Todos quedan como pendientes. Si nada encaja, queda vacío.
+pub fn parse_plan(tool_input: &Value) -> Vec<Todo> {
+    let Some(plan) = tool_input.get("plan").and_then(Value::as_str) else {
+        return Vec::new();
+    };
+    let numbered = |line: &str| -> Option<String> {
+        let (digits, rest) = line.split_once(". ")?;
+        (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| strip_markdown(rest.trim()))
+    };
+    let heading = |line: &str| line.strip_prefix("## ").map(|t| strip_markdown(t.trim()));
+    let steps = |pick: &dyn Fn(&str) -> Option<String>| -> Vec<Todo> {
+        plan.lines()
+            .filter_map(pick)
+            .filter(|content| !content.is_empty())
+            .map(|content| Todo {
+                content,
+                status: TodoStatus::Pending,
+            })
+            .collect()
+    };
+    let numbered_steps = steps(&numbered);
+    if numbered_steps.is_empty() {
+        steps(&heading)
+    } else {
+        numbered_steps
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AgentSession {
     pub key: AgentKey,
@@ -188,6 +224,12 @@ impl AgentSession {
                         tool: p.tool_name.clone(),
                     }
                 };
+                if p.tool_name == "ExitPlanMode" {
+                    let steps = parse_plan(&p.tool_input);
+                    if !steps.is_empty() {
+                        self.todos = steps;
+                    }
+                }
                 self.pending = Some(p.clone());
             }
             BrokerEvent::PermissionEnded { id, reason, .. } => {
@@ -607,6 +649,65 @@ mod tests {
         }
         let sin_estado = parse_todos(&json!({"todos": [{"content": "algo"}]}));
         assert_eq!(sin_estado[0].status, TodoStatus::Pending);
+    }
+
+    fn perm_plan(id: u64, plan: Value) -> BrokerEvent {
+        BrokerEvent::Permission(PermissionRequest {
+            id,
+            agent: "k".into(),
+            session_id: "s".into(),
+            tool_name: "ExitPlanMode".into(),
+            tool_input: json!({"plan": plan, "planFilePath": "/tmp/p.md"}),
+            cwd: "/".into(),
+            suggestions: Value::Null,
+        })
+    }
+
+    #[test]
+    fn el_plan_de_exitplanmode_sale_de_los_pasos_numerados() {
+        let mut s = session();
+        let plan = "# Plan\n\n## Fases\n\n1. **Lógica** pura con `tests`.\n2. Pintado.\n   continuación sangrada\n- viñeta suelta\n3. Docs\n";
+        assert!(s.apply(&perm_plan(1, json!(plan))));
+        let textos: Vec<_> = s.todos.iter().map(|t| t.content.as_str()).collect();
+        assert_eq!(textos, ["Lógica pura con tests.", "Pintado.", "Docs"]);
+        assert!(s.todos.iter().all(|t| t.status == TodoStatus::Pending));
+        assert_eq!(s.status, Status::PlanReady);
+    }
+
+    #[test]
+    fn sin_pasos_numerados_el_plan_usa_los_titulos_de_nivel_2() {
+        let todos = parse_plan(
+            &json!({"plan": "# Plan\n## Contexto\ntexto\n## Verificación\n### Detalle\n"}),
+        );
+        let textos: Vec<_> = todos.iter().map(|t| t.content.as_str()).collect();
+        assert_eq!(textos, ["Contexto", "Verificación"]);
+    }
+
+    #[test]
+    fn el_plan_sigue_tras_aprobar_y_un_todowrite_lo_sustituye() {
+        let mut s = session();
+        s.apply(&perm_plan(1, json!("1. Uno\n2. Dos\n")));
+        assert!(s.resolved(1));
+        assert_eq!(s.status, Status::Working);
+        assert_eq!(s.todos.len(), 2, "aprobar no borra el plan");
+        s.apply(&hook(
+            "PostToolUse",
+            json!({"tool_name": "TodoWrite", "tool_input": {"todos": [{"content": "x", "status": "pending"}]}}),
+        ));
+        assert_eq!(s.todos.len(), 1);
+    }
+
+    #[test]
+    fn un_plan_vacio_o_raro_no_borra_el_plan_anterior() {
+        let mut s = session();
+        s.apply(&perm_plan(1, json!("1. Uno\n")));
+        s.resolved(1);
+        for raro in [json!(""), json!("solo texto"), json!(5), Value::Null] {
+            s.apply(&perm_plan(2, raro));
+            s.resolved(2);
+            assert_eq!(s.todos.len(), 1);
+        }
+        assert!(parse_plan(&json!({})).is_empty());
     }
 
     #[test]

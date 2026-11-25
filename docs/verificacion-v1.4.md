@@ -7,7 +7,7 @@ Lista de comprobación de la v1.4: Review (diff y comentarios en lote), inspecto
 ## Desviaciones del spec
 
 - **El diff no es `base...HEAD`.** Claude Code normalmente no hace commit, y ese diff saldría vacío justo cuando hay trabajo que revisar. Se compara el **árbol de trabajo contra la base común** (`git merge-base HEAD <base>`), con los archivos nuevos sin seguimiento (hasta 200, de 1 MiB como máximo) y respetando `.gitignore`.
-- **El plan sale de `TodoWrite`**, no de `TaskCreated`/`TaskCompleted` (esos son de subagentes). **Sin verificar contra una sesión real**: en `claude -p` esa herramienta no existe y la captura interactiva no fue concluyente. Si el formato no encaja, la sección «PLAN» queda en «Sin plan todavía».
+- **El plan sale de `ExitPlanMode` y de `TodoWrite`**, no de `TaskCreated`/`TaskCompleted` (esos son de subagentes). **Verificado contra una sesión real (issue #14):** el permiso de `ExitPlanMode` trae `tool_input.plan` (markdown) y `planFilePath`; los pasos numerados (`1. …`) o, si no hay, los títulos `##`, pasan a la sección «PLAN» (`parse_plan`) y se conservan al aprobar. Un `TodoWrite` posterior los sustituye. **Sin verificar:** `TodoWrite`, `TaskCreate` y `TaskUpdate` no aparecieron en la captura. Si nada encaja, la sección queda en «Sin plan todavía».
 - **El inspector solo aparece si cabe**: la columna central conserva 560 pt (spec). Con la sidebar abierta, hacen falta 1120 pt de ventana; sin ella, 856.
 
 ## Ya comprobado
