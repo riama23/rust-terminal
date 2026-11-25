@@ -39,7 +39,16 @@ Para desarrollar: `cargo run`, o `scripts/bundle.sh` para generar el `.app` en `
 
 La versión sigue [SemVer](https://semver.org) y se define una sola vez, en `[workspace.package]` de `Cargo.toml` (la versión actual es **0.1.0**). Solo las versiones **minor o major** (`vX.Y.0`) llevan tag y release; los patch no.
 
-**Descargar:** en la página de [Releases](https://github.com/riama23/rust-terminal/releases) de cada tag está `rust-terminal-vX.Y.0-macos-arm64.zip` (el `.app`) y su `.sha256`. El repositorio es privado, así que hace falta acceso a él. La app lleva firma ad hoc y no está notarizada: tras descomprimirla, quita la cuarentena con `xattr -dr com.apple.quarantine rust-terminal.app` y ábrela.
+**Instalar una versión (recomendado):** cada release incluye `install-vX.Y.0.sh`, que clona ese tag, lo compila e instala la app en `/Applications` (o en `~/Applications` si no hay permiso). Necesita los [requisitos](#requisitos) y acceso SSH al repositorio, que es privado:
+
+```sh
+gh release download vX.Y.0 -R riama23/rust-terminal -p 'install-*.sh'
+bash install-vX.Y.0.sh
+```
+
+Al compilarla en tu Mac, la app no lleva cuarentena y se abre sin avisos.
+
+**Alternativa sin compilar:** en la página de [Releases](https://github.com/riama23/rust-terminal/releases) de cada tag está `rust-terminal-vX.Y.0-macos-arm64.zip` (el `.app`) y su `.sha256`. La app lleva firma ad hoc y no está notarizada: tras descomprimirla, quita la cuarentena con `xattr -dr com.apple.quarantine rust-terminal.app` y ábrela.
 
 **Publicar una versión nueva:**
 
