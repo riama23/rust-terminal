@@ -35,6 +35,20 @@ El script comprueba los requisitos, compila e instala `rust-terminal.app` en `/A
 
 Para desarrollar: `cargo run`, o `scripts/bundle.sh` para generar el `.app` en `target/release/` sin instalarlo.
 
+## Releases
+
+La versión sigue [SemVer](https://semver.org) y se define una sola vez, en `[workspace.package]` de `Cargo.toml` (la versión actual es **0.1.0**). Solo las versiones **minor o major** (`vX.Y.0`) llevan tag y release; los patch no.
+
+**Descargar:** en la página de [Releases](https://github.com/riama23/rust-terminal/releases) de cada tag está `rust-terminal-vX.Y.0-macos-arm64.zip` (el `.app`) y su `.sha256`. El repositorio es privado, así que hace falta acceso a él. La app lleva firma ad hoc y no está notarizada: tras descomprimirla, quita la cuarentena con `xattr -dr com.apple.quarantine rust-terminal.app` y ábrela.
+
+**Publicar una versión nueva:**
+
+1. Sube `version` en `Cargo.toml`, ejecuta `cargo check` (actualiza `Cargo.lock`) y fusiona el cambio en `main`.
+2. Desde `main`, al día con `origin`: `scripts/release.sh X.Y.0` crea el tag en local; con `--push` también lo sube.
+3. El tag dispara `.github/workflows/release.yml`, que compila el `.app`, lo empaqueta y crea el release con las notas generadas a partir de los commits.
+
+`release.sh` se niega a continuar si no estás en `main`, si hay cambios sin confirmar o si la versión de `Cargo.toml` no coincide con el tag. El workflow repite esa última comprobación.
+
 ## Informar de fallos
 
 Pulsa **Cmd+Shift+I** (Ayuda → Informar de un fallo…) en el panel donde algo ha ido mal. Se abre una issue nueva en GitHub con un diagnóstico ya rellenado, que puedes revisar y editar antes de enviarla. Ver [docs/semana-de-prueba.md](docs/semana-de-prueba.md).

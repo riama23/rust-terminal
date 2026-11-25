@@ -1,6 +1,6 @@
 [package]
 name = "rust-terminal-ctl"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 description = "`rt`: la línea de órdenes de la API de control de rust-terminal (experimental)"
 

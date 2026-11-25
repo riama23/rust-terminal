@@ -1,0 +1,45 @@
+name: Release
+
+# Solo versiones minor o major (vX.Y.0). Los patch y los pre-releases no publican.
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.0'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Comprobar que el tag coincide con Cargo.toml
+        run: |
+          cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if [[ "${GITHUB_REF_NAME#v}" != "$cargo_version" ]]; then
+            echo "El tag ${GITHUB_REF_NAME} no coincide con la versión de Cargo.toml ($cargo_version)." >&2
+            exit 1
+          fi
+
+      - name: Instalar Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Compilar el .app
+        run: scripts/bundle.sh release
+
+      - name: Empaquetar
+        run: |
+          app="$(ls -d target/release/*.app)"
+          zip="rust-terminal-${GITHUB_REF_NAME}-macos-arm64.zip"
+          ditto -c -k --keepParent "$app" "$zip"
+          shasum -a 256 "$zip" > "$zip.sha256"
+          echo "ZIP=$zip" >> "$GITHUB_ENV"
+
+      - name: Publicar el release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "$ZIP" "$ZIP.sha256" \
+            --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
